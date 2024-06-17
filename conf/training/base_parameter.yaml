@@ -1,0 +1,8 @@
+# This is a place-holder config
+# Define and use specific parameters for the experiment
+
+experiment_name: ???
+
+use_cuda: false
+
+seed: 73

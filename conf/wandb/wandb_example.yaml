@@ -1,0 +1,4 @@
+# Template for wandb logs
+# use_wandb: True
+# project: ???
+# entity: ???

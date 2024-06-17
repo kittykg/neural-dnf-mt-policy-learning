@@ -1,0 +1,7 @@
+# Webhook if you want to get discord notification of experiments status.
+# This is not necessary, you can comment out the code that uses the webhook
+
+# use_discord_webhook: ???
+
+# put your webhook here :) not showing you mine XD
+# discord_webhook_url: ??? 

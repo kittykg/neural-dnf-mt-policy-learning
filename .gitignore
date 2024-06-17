@@ -160,3 +160,27 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Certain folders
+.DS_Store
+.vscode
+
+# Hydra outputs
+outputs/
+multirun/
+
+# Models
+*_ppo_storage/
+
+# Unless specified, we ignore all notebooks for now
+notebooks/
+
+# Config
+conf/config.yaml
+conf/secret.yaml
+conf/wandb/wandb.yaml
+conf/webhook/webhook.yaml
+
+# Scripts
+s.sh
+multirun_script.py

@@ -1,0 +1,59 @@
+experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux
+
+seed: 73
+use_cuda: False
+use_mps: False
+
+log_interval: 100
+
+customised_image_encoder:
+  # Conv layer config:
+  encoder_output_chanel: 4
+  last_act: tanh
+  kernel_size: 1
+  # Extra layer config:
+  use_extra_layer: True
+  extra_layer_out: 16
+  extra_layer_use_bias: True
+
+use_eo: False
+use_mt: True
+
+aux_loss:
+  emb_dis_lambda: 3e-15
+  dis_l1_mod_lambda: 0
+  tanh_conj_lambda: 0
+  mt_ce2_lambda: 1e-3 # for NDNF-MT
+
+dds:
+  initial_delta: 0.1
+  delta_decay_delay: 50
+  delta_decay_steps: 10
+  delta_decay_rate: 1.1
+
+door_corridor:
+  corridor_length: 5
+  agent_view_size: 3
+  max_steps: 270
+
+total_timesteps: 3e5
+learning_rate: 1e-2
+num_envs: 8
+num_steps: 64
+anneal_lr: True
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 8
+update_epochs: 4
+norm_adv: True
+clip_coef: 0.3
+clip_vloss: True
+ent_coef: 0.1
+vf_coef: 1
+max_grad_norm: 0.5
+target_kl: null
+
+# Video recording disabled for now
+# video_recording: True
+# video_recording_freq: 1000
+# video_recording_env_seed: 123

@@ -183,4 +183,4 @@ conf/webhook/webhook.yaml
 
 # Scripts
 s.sh
-multirun_script.py
+script/

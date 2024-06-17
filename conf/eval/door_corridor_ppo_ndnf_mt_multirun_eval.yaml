@@ -1,0 +1,23 @@
+experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux
+multirun_seeds: [474, 1548, 2501, 2531, 3661, 3950, 4345, 4465, 5187, 5845, 5919, 6240, 6731, 7160, 8208, 8660]
+
+use_eo: False
+use_mt: True
+
+use_argmax_to_choose_action: True
+discretise_img_encoding: True
+
+customised_image_encoder:
+  # Conv layer config:
+  encoder_output_chanel: 4
+  last_act: tanh
+  kernel_size: 1
+  # Extra layer config:
+  use_extra_layer: True
+  extra_layer_out: 16
+  extra_layer_use_bias: True
+
+door_corridor:
+  corridor_length: 5
+  agent_view_size: 3
+  max_steps: 30

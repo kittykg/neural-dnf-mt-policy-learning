@@ -306,6 +306,24 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
             "l_disj_l1_mod": l_disj_l1_mod,
         }
 
+    def get_img_encoding(
+        self,
+        preprocessed_obs: dict[str, Tensor],
+        discretise_img_encoding: bool = False,
+    ) -> Tensor:
+        """
+        Return the image encoding of the observation.
+        This function should only be called during evaluation.
+        """
+        assert (
+            not self.training
+        ), "get_img_encoding() should only be called during evaluation!"
+        with torch.no_grad():
+            embedding = self._get_embedding(preprocessed_obs)
+            if discretise_img_encoding:
+                embedding = torch.sign(embedding)
+        return embedding
+
     def get_actor_output(
         self,
         preprocessed_obs: dict[str, Tensor],

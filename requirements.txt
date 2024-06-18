@@ -1,0 +1,12 @@
+black
+clingo
+hydra-core
+gymnasium
+matplotlib
+moviepy
+pandas
+pygame
+seaborn
+tensorboard
+torch >= 2.0.0
+wandb

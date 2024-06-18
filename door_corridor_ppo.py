@@ -1163,6 +1163,7 @@ def run_experiment(cfg: DictConfig) -> None:
             monitor_gym=True,
             save_code=True,
             sync_tensorboard=True,
+            group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
     # torch.autograd.set_detect_anomaly(True)  # type: ignore

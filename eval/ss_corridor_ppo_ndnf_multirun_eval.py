@@ -1,4 +1,7 @@
-# This script evaluates the NDNF MT agent on the DoorCorridor environment
+# This script evaluates the NDNF based agent on MDP SpecialStateCorridor envs
+# i.e. using state number as observation of agent
+# There are deterministic policies for each envs, so the agent should be able to
+# learn and extract ASP rules
 from copy import deepcopy
 import json
 import logging
@@ -28,7 +31,7 @@ except ValueError:  # Already removed
     pass
 
 
-from corridor_grid.envs import DoorCorridorEnv
+from corridor_grid.envs.base_ss_corridor import BaseSpecialStateCorridorEnv
 from neural_dnf.post_training import (
     prune_neural_dnf,
     apply_threshold,
@@ -36,8 +39,16 @@ from neural_dnf.post_training import (
     get_thresholding_upper_bound,
 )
 from common import synthesize
-from door_corridor_ppo import construct_model, make_env, DCPPONDNFMutexTanhAgent
-from eval.common import DoorCorridorFailureCode
+from ss_corridor_ppo import (
+    construct_model,
+    construct_single_environment,
+    make_env,
+    ss_corridor_preprocess_obs,
+    SSCPPONDNFBasedAgent,
+    SSCPPONDNFEOAgent,
+    SSCPPONDNFMutexTanhAgent,
+)
+from eval.common import SpecialStateCorridorFailureCode
 from utils import post_to_discord_webhook
 
 
@@ -45,25 +56,19 @@ DEFAULT_GEN_SEED = 2
 NUM_PROCESSES = 8
 NUM_EPISODES = 100
 DEVICE = torch.device("cpu")
-BASE_STORAGE_DIR = root / "dc_ppo_storage"
+BASE_STORAGE_DIR = root / "ssc_ppo_storage"
+
 log = logging.getLogger()
-single_env = DoorCorridorEnv(render_mode="rgb_array")
-envs = gym.vector.SyncVectorEnv(
-    [make_env(i, i, False) for i in range(NUM_PROCESSES)]
-)
 
 
 def get_ndnf_action(
-    model: DCPPONDNFMutexTanhAgent,
-    discretise_img_encoding: bool,
+    model: SSCPPONDNFBasedAgent,
     obs: dict[str, Tensor],
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-    # Use normal tanh interpretation
     with torch.no_grad():
         actions = model.get_actions(
             preprocessed_obs=obs,
             use_argmax=True,
-            discretise_img_encoding=discretise_img_encoding,
         )
     return actions
 
@@ -71,6 +76,7 @@ def get_ndnf_action(
 def simulate_fn(
     envs: gym.vector.SyncVectorEnv,
     action_fn: Callable[[dict[str, Tensor]], tuple],
+    process_obs=Callable[[dict], Tensor],
     num_episodes=NUM_EPISODES,
 ) -> dict[str, Any]:
     logs = {
@@ -80,8 +86,8 @@ def simulate_fn(
         "missing_actions": False,
     }
     next_obs_dict, _ = envs.reset()
-    next_obs = torch.Tensor(next_obs_dict["image"]).to(DEVICE)
-    next_obs_dict = {"image": next_obs}
+    next_obs = process_obs(next_obs_dict)
+    next_obs_dict = {"input": next_obs}
 
     log_done_counter = 0
     log_episode_return = torch.zeros(NUM_PROCESSES, device=DEVICE)
@@ -100,8 +106,8 @@ def simulate_fn(
         next_obs_dict, reward, terminations, truncations, _ = envs.step(
             actions[0]
         )
-        next_obs = torch.Tensor(next_obs_dict["image"]).to(DEVICE)
-        next_obs_dict = {"image": next_obs}
+        next_obs = process_obs(next_obs_dict)
+        next_obs_dict = {"input": next_obs}
         next_done = np.logical_or(terminations, truncations)
 
         log_episode_return += torch.tensor(
@@ -124,8 +130,15 @@ def simulate_fn(
     return logs
 
 
-def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
-    simulate = lambda action_fn: simulate_fn(envs, action_fn)
+def post_training(
+    model_dir: Path,
+    model: SSCPPONDNFBasedAgent,
+    envs: gym.vector.SyncVectorEnv,
+    single_env: BaseSpecialStateCorridorEnv,
+    process_obs: Callable[[dict], Tensor],
+    env_max_steps: int,
+):
+    simulate = lambda action_fn: simulate_fn(envs, action_fn, process_obs)
 
     def _simulate_with_print(action_fn, model_name: str) -> dict[str, Any]:
         logs = simulate(action_fn)
@@ -147,37 +160,59 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         return logs
 
     def is_truncated(logs: dict[str, Any]) -> bool:
-        return (
-            abs(np.array(logs["return_per_episode"]).mean())
-            >= single_env.max_steps
-        )
+        return abs(np.array(logs["return_per_episode"]).mean()) >= env_max_steps
 
-    _ndnf_mt_action_fn = lambda obs: get_ndnf_action(model, False, obs)
-    _ndnf_mt_dis_action_fn = lambda obs: get_ndnf_action(model, True, obs)
+    _action_fn = lambda obs: get_ndnf_action(model, obs)
+
+    if isinstance(model, SSCPPONDNFEOAgent):
+        base_stage_name = "NDNF EO"
+        plain_ndnf_model = model.to_ndnf_agent()
+        _plain_ndnf_action_fn = lambda obs: get_ndnf_action(
+            plain_ndnf_model, obs
+        )
+    elif isinstance(model, SSCPPONDNFMutexTanhAgent):
+        base_stage_name = "NDNF MT"
+    else:
+        base_stage_name = "NDNF"
 
     # Stage 1: Evaluate the model post-training
-    og_ndnf_mt_logs = _simulate_with_print(_ndnf_mt_action_fn, "NDNF MT")
-    # Discretise image encoding output
-    og_ndnf_mt_dis_logs = _simulate_with_print(
-        _ndnf_mt_dis_action_fn, "NDNF MT dis"
-    )
-    if is_truncated(og_ndnf_mt_logs):
-        log.info("NDNF MT is not finishing the environment!")
-        return DoorCorridorFailureCode.FAIL_AT_EVAL_NDNF_MT_TRUNCATED
-    if not is_truncated(og_ndnf_mt_logs) and is_truncated(og_ndnf_mt_dis_logs):
-        log.info("NDNF MT dis is truncated after discretisation!")
-        return DoorCorridorFailureCode.FAIL_AT_EVAL_NDNF_MT_DIS_TRUNCATED
-    if og_ndnf_mt_dis_logs["missing_actions"]:
-        log.info("NDNF MT dis has missing actions!")
-        return DoorCorridorFailureCode.FAIL_AT_EVAL_NDNF_MT_DIS_MISS_ACTION
-    if not og_ndnf_mt_dis_logs["mutual_exclusivity"]:
-        log.info("NDNF MT dis is not mutually exclusive!")
-        return DoorCorridorFailureCode.FAIL_AT_EVAL_NDNF_MT_DIS_NOT_ME
+    og_logs = _simulate_with_print(_action_fn, base_stage_name)
+
+    if is_truncated(og_logs):
+        log.info(f"{base_stage_name} is not finishing the environment!")
+        if isinstance(model, SSCPPONDNFMutexTanhAgent):
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_EVAL_NDNF_MT_TRUNCATED
+            )
+        elif isinstance(model, SSCPPONDNFEOAgent):
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_EVAL_NDNF_EO_TRUNCATED
+            )
+        return SpecialStateCorridorFailureCode.FAIL_AT_EVAL_NDNF_TRUNCATED
+
+    if isinstance(model, SSCPPONDNFEOAgent):
+        # If the model is EO, we remove the EO and evaluate the model
+        og_plain_ndnf_logs = _simulate_with_print(
+            _plain_ndnf_action_fn, "Plain NDNF (EO removed)"
+        )
+        if is_truncated(og_plain_ndnf_logs):
+            log.info(
+                "Plain NDNF (EO removed) is not finishing the environment!"
+            )
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_EVAL_NDNF_LOSS_PERFORMANCE_AFTER_EO_REMOVED
+            )
+
+        # If the model is not truncated and before proceeding to the next stage,
+        # we set model to the plain NDNF model
+        model = plain_ndnf_model
+        base_stage_name = "Plain NDNF (EO removed)"
+        _action_fn = lambda obs: get_ndnf_action(model, obs)
 
     log.info("======================================")
 
     # Stage 2: Prune the model
-    def prune_model() -> DoorCorridorFailureCode | None:
+    def prune_model() -> SpecialStateCorridorFailureCode | None:
         log.info("Pruning the model...")
 
         def comparison_fn(og_log, new_log):
@@ -198,7 +233,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             log.info(f"Pruning iteration: {prune_count+1}")
             prune_result_dict = prune_neural_dnf(
                 model.actor,
-                lambda: simulate(_ndnf_mt_dis_action_fn),
+                lambda: simulate(_action_fn),
                 {},
                 comparison_fn,
                 options={
@@ -228,19 +263,21 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             )
 
             post_prune_ndnf_mt_dis_log = _simulate_with_print(
-                _ndnf_mt_dis_action_fn,
-                f"NDNF MT dis - (Prune iteration: {prune_count})",
+                _action_fn,
+                f"{base_stage_name} - (Prune iteration: {prune_count})",
             )
 
             if is_truncated(post_prune_ndnf_mt_dis_log):
-                log.info("Post prune NDNF MT dis losses performance!")
-                return DoorCorridorFailureCode.FAIL_AT_PRUNE_TRUNCATED
+                log.info(f"Post prune {base_stage_name} losses performance!")
+                return SpecialStateCorridorFailureCode.FAIL_AT_PRUNE_TRUNCATED
             if post_prune_ndnf_mt_dis_log["missing_actions"]:
-                log.info("Post prune NDNF MT dis has missing actions!")
-                return DoorCorridorFailureCode.FAIL_AT_PRUNE_MISS_ACTION
+                log.info(f"Post prune {base_stage_name} has missing actions!")
+                return SpecialStateCorridorFailureCode.FAIL_AT_PRUNE_MISS_ACTION
             if not post_prune_ndnf_mt_dis_log["mutual_exclusivity"]:
-                log.info("Post prune NDNF MT dis is not mutually exclusive!")
-                return DoorCorridorFailureCode.FAIL_AT_PRUNE_NOT_ME
+                log.info(
+                    f"Post prune {base_stage_name} is not mutually exclusive!"
+                )
+                return SpecialStateCorridorFailureCode.FAIL_AT_PRUNE_NOT_ME
 
             # If any of the important keys has the value not 0, then we should continue pruning
             if any([prune_result_dict[k] != 0 for k in important_keys]):
@@ -259,11 +296,11 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         model.load_state_dict(pruned_state)
     else:
         ret = prune_model()
-        if ret is not None and isinstance(ret, DoorCorridorFailureCode):
+        if ret is not None and isinstance(ret, SpecialStateCorridorFailureCode):
             return ret
         torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
 
-    _simulate_with_print(_ndnf_mt_dis_action_fn, f"NDNF MT dis pruned")
+    _simulate_with_print(_action_fn, f"{base_stage_name} pruned")
 
     log.info("======================================")
 
@@ -271,7 +308,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     og_conj_weight = model.actor.conjunctions.weights.data.clone()
     og_disj_weight = model.actor.disjunctions.weights.data.clone()
 
-    def threshold_model() -> DoorCorridorFailureCode | list[float]:
+    def threshold_model() -> SpecialStateCorridorFailureCode | list[float]:
         log.info("Thresholding the model...")
 
         threshold_upper_bound = get_thresholding_upper_bound(model.actor)
@@ -281,14 +318,14 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         result_dicts = []
         for v in t_vals:
             apply_threshold(model.actor, og_conj_weight, og_disj_weight, v)
-            result_dicts.append(simulate(_ndnf_mt_dis_action_fn))
+            result_dicts.append(simulate(_action_fn))
 
         t_vals_candidates = []
         for i, d in enumerate(result_dicts):
             if (
                 (
                     np.array(d["return_per_episode"]).mean()
-                    < np.array(og_ndnf_mt_dis_logs["return_per_episode"]).mean()
+                    < np.array(og_logs["return_per_episode"]).mean()
                 )
                 or d["missing_actions"]
                 or not d["mutual_exclusivity"]
@@ -297,7 +334,9 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             t_vals_candidates.append(t_vals[i].item())
         if len(t_vals_candidates) == 0:
             log.info("No thresholding candidate found!")
-            return DoorCorridorFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+            )
 
         log.info(f"t_vals_candidates: {t_vals_candidates}")
         return t_vals_candidates
@@ -312,13 +351,15 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
                 log.info(
                     "Thresholding failed with no candidate in the previous run!"
                 )
-                return DoorCorridorFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+                return (
+                    SpecialStateCorridorFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+                )
             t_vals_candidates = threshold_json_dict["threshold_vals"]
     else:
         ret = threshold_model()
         threshold_json_dict = {}
         with open(model_dir / "threshold_val_candidates.json", "w") as f:
-            if isinstance(ret, DoorCorridorFailureCode):
+            if isinstance(ret, SpecialStateCorridorFailureCode):
                 threshold_json_dict["threshold_success"] = False
                 return ret
             t_vals_candidates = ret
@@ -333,7 +374,10 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         og_disj_weight,
         t_vals_candidates[0],
     )
-    _simulate_with_print(_ndnf_mt_dis_action_fn, "NDNF MT dis (thresholded)")
+    _simulate_with_print(_action_fn, f"{base_stage_name} (thresholded)")
+    log.info(model.actor.conjunctions.weights.data)
+    log.info(model.actor.disjunctions.weights.data)
+    log.info("\n")
 
     log.info("======================================")
 
@@ -344,7 +388,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     else:
         rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
         with open(model_dir / "asp_rules.txt", "w") as f:
-            f.writelines(rules)
+            f.write("\n".join(rules))
     for r in rules:
         log.info(r)
 
@@ -358,25 +402,14 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     reward_sum = 0
 
     while not terminated and not truncated:
-        with torch.no_grad():
-            raw_img_encoding = model.get_img_encoding(
-                preprocessed_obs={
-                    "image": torch.tensor(obs["image"].copy(), device=DEVICE)
-                    .unsqueeze(0)
-                    .float()
-                }
-            ).squeeze(0)
-        img_encoding = [
-            f"a_{a.item()}." for a in torch.nonzero(raw_img_encoding > 0)
-        ]
-        log.info(img_encoding)
+        input_encoding = [f"a_{obs['agent_location']}."]
+        log.info(input_encoding)
 
         ctl = clingo.Control(["--warn=none"])
         show_statements = [
-            f"#show disj_{i}/0."
-            for i in range(DoorCorridorEnv.get_num_actions())
+            f"#show disj_{i}/0." for i in range(model.action_size)
         ]
-        ctl.add("base", [], " ".join(img_encoding + show_statements + rules))
+        ctl.add("base", [], " ".join(input_encoding + show_statements + rules))
         ctl.ground([("base", [])])
         with ctl.solve(yield_=True) as handle:  # type: ignore
             all_answer_sets = [str(a) for a in handle]
@@ -384,22 +417,28 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         if len(all_answer_sets) != 1:
             # No model or multiple answer sets, should not happen
             log.info(f"No model or multiple answer sets when evaluating rules.")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
+            )
 
         if all_answer_sets[0] == "":
             log.info(f"No output action!")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
+            )
 
         output_classes = all_answer_sets[0].split(" ")
         if len(output_classes) == 0:
             log.info(f"No output action!")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
+            return (
+                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
+            )
         output_classes_set = set([int(o[5:]) for o in output_classes])
 
         if len(output_classes_set) != 1:
             log.info(f"Output set: {output_classes_set} not exactly one item!")
             return (
-                DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
+                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
             )
 
         action = list(output_classes_set)[0]
@@ -409,38 +448,63 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
 
     if truncated:
         log.info(f"Truncated: {reward_sum}")
-        return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED
+        return SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED
 
     log.info(f"Reward sum: {reward_sum}")
     return 0
 
 
 def post_train_eval(eval_cfg: DictConfig):
-    experiment_name = f"{eval_cfg['experiment_name']}"
+    experiment_name = eval_cfg["experiment_name"]
     use_ndnf = "ndnf" in experiment_name
+    assert use_ndnf
 
-    assert use_ndnf and not eval_cfg["use_eo"] and eval_cfg["use_mt"]
+    use_state_no_as_obs = "sn" in experiment_name
 
     ret_dict: dict[int, list[int]] = dict(
-        [(c.value, []) for c in DoorCorridorFailureCode] + [(0, [])]
+        [(c.value, []) for c in SpecialStateCorridorFailureCode] + [(0, [])]
     )
+
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(eval_cfg, i, i, False) for i in range(NUM_PROCESSES)]
+    )
+    single_env = construct_single_environment(eval_cfg)
+    process_obs = lambda obs: ss_corridor_preprocess_obs(
+        use_state_no_as_obs=use_state_no_as_obs,
+        use_ndnf=use_ndnf,
+        corridor_length=single_env.corridor_length,
+        obs=obs,
+        device=DEVICE,
+    )
+
+    num_inputs = single_env.corridor_length if use_state_no_as_obs else 2
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
-        model: DCPPONDNFMutexTanhAgent = construct_model(
-            eval_cfg,
-            DoorCorridorEnv.get_num_actions(),
-            use_ndnf,
-            single_env.observation_space["image"],  # type: ignore
+        model = construct_model(
+            num_inputs=num_inputs,
+            num_latent=eval_cfg["model_latent_size"],
+            action_size=int(single_env.action_space.n),
+            use_ndnf=use_ndnf,
+            use_eo="eo" in experiment_name,
+            use_mt="mt" in experiment_name,
         )
+        assert isinstance(model, SSCPPONDNFBasedAgent)
         model.to(DEVICE)
         model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
         model.load_state_dict(model_state)
         model.eval()
 
         log.info(f"Experiment {model_dir.name} loaded!")
-        ret_code = post_training(model_dir, model)
+        ret_code = post_training(
+            model_dir=model_dir,
+            model=model,
+            envs=envs,
+            single_env=single_env,
+            process_obs=process_obs,
+            env_max_steps=single_env.truncate_tolerance,
+        )
         ret_dict[ret_code].append(s)  # use the random seed as the identifier
         log.info("======================================\n")
 
@@ -448,7 +512,7 @@ def post_train_eval(eval_cfg: DictConfig):
         if k == 0:
             log.info(f"Success: {sorted(v)}")
         else:
-            log.info(f"{DoorCorridorFailureCode(k).name}: {sorted(v)}")
+            log.info(f"{SpecialStateCorridorFailureCode(k).name}: {sorted(v)}")
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")

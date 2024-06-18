@@ -361,6 +361,7 @@ def post_training(
         with open(model_dir / "threshold_val_candidates.json", "w") as f:
             if isinstance(ret, SpecialStateCorridorFailureCode):
                 threshold_json_dict["threshold_success"] = False
+                json.dump(threshold_json_dict, f)
                 return ret
             t_vals_candidates = ret
             threshold_json_dict["threshold_success"] = True

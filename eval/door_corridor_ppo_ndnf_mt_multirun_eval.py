@@ -320,6 +320,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
         with open(model_dir / "threshold_val_candidates.json", "w") as f:
             if isinstance(ret, DoorCorridorFailureCode):
                 threshold_json_dict["threshold_success"] = False
+                json.dump(threshold_json_dict, f)
                 return ret
             t_vals_candidates = ret
             threshold_json_dict["threshold_success"] = True
@@ -344,7 +345,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     else:
         rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
         with open(model_dir / "asp_rules.txt", "w") as f:
-            f.writelines(rules)
+            f.write("\n".join(rules))
     for r in rules:
         log.info(r)
 

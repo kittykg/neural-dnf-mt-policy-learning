@@ -167,10 +167,10 @@ cython_debug/
 
 # Hydra outputs
 outputs/
-multirun/
 
-# Models
+# Models and result logs
 *_ppo_storage/
+results/
 
 # Unless specified, we ignore all notebooks for now
 notebooks/

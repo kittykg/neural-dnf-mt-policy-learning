@@ -18,7 +18,13 @@ from torch import Tensor, nn, optim
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 import wandb
 
-from corridor_grid.envs import DoorCorridorEnv
+from corridor_grid.envs.base_ss_corridor import BaseSpecialStateCorridorEnv
+from corridor_grid.envs import (
+    SmallSSCorridorEnv,
+    LongSSCorridorEnv,
+    CircularSSCorridorEnv,
+)
+
 from neural_dnf import NeuralDNF, NeuralDNFEO, NeuralDNFMutexTanh
 from neural_dnf.neural_dnf import BaseNeuralDNF  # for type hinting
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
@@ -27,66 +33,44 @@ from common import init_params
 from utils import post_to_discord_webhook
 
 
-PPO_MODEL_DIR = Path(__file__).parent / "dc_ppo_storage/"
+PPO_MODEL_DIR = Path(__file__).parent / "ssc_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 
-class DCPPOBaseAgent(nn.Module):
+class SSCPPOBaseAgent(nn.Module):
     """
     To create a base agent, pass in the following parameters:
+    - num_inputs (int): the number of input features
+    - num_latent (int): the number of latent features
     - action_size (int): the number of actions the agent can take
-    - img_obs_space (gym.spaces.Box): the observation space of the environment
-    - image_encoder (nn.Module): the image encoder for the agent
-        This should be created using the either of the 2 static methods --
-        `create_default_image_encoder()` or `customise_image_encoder()`
-    - embedding_size (int): the size of the embedding after the image encoder
-        This is calculated and return by the 2 static methods mentioned above.
-    - actor (nn.Module | None): an actor network.
-        By default, this is None, and will be created using the
-        `_create_default_actor()` method.
-    - extra_layer (nn.Module | None): an optional extra linear layer (with an
-        activation function) to add after the image encoder
-        By default, this is None. If you want to add an extra layer, you can
-        pass in a nn.Module, or create one using the `customise_image_encoder()`
-        method.
+
+    The actor and critic networks are created using `_create_default_actor()`
+    and `_create_default_critic()` methods respectively.
     """
 
     # Model components
-    image_encoder: nn.Module
-    extra_layer: nn.Module | None
     actor: nn.Module
     critic: nn.Module
 
-    # Model parameters
+    # Actor parameters
+    num_inputs: int
+    num_latent: int
     action_size: int
-    embedding_size: int  # the input size for actor and critic
-
-    # Observation space
-    img_obs_space: gym.spaces.Box
 
     def __init__(
         self,
+        num_inputs: int,
+        num_latent: int,
         action_size: int,
-        img_obs_space: gym.spaces.Box,
-        image_encoder: nn.Module,
-        embedding_size: int,
-        actor: nn.Module | None = None,
-        extra_layer: nn.Module | None = None,
     ) -> None:
         super().__init__()
 
+        self.num_inputs = num_inputs
+        self.num_latent = num_latent
         self.action_size = action_size
-        self.img_obs_space = img_obs_space
-        self.image_encoder = image_encoder
-        self.extra_layer = extra_layer
-        self.embedding_size = embedding_size
 
-        if actor is not None:
-            self.actor = actor
-        else:
-            self.actor = self._create_default_actor()
-
+        self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
 
         self._init_params()
@@ -96,8 +80,7 @@ class DCPPOBaseAgent(nn.Module):
         Return the value of the state.
         This function is used in PPO algorithm
         """
-        embedding = self._get_embedding(preprocessed_obs)
-        return self.critic(embedding)
+        return self.critic(preprocessed_obs["input"])
 
     def get_action_and_value(
         self, preprocessed_obs: dict[str, Tensor], action=None
@@ -107,8 +90,8 @@ class DCPPOBaseAgent(nn.Module):
         distribution, and the value of the state.
         This function is used in PPO algorithm
         """
-        embedding = self._get_embedding(preprocessed_obs)
-        logits = self.actor(embedding)
+        x = preprocessed_obs["input"]
+        logits = self.actor(x)
         dist = torch.distributions.Categorical(logits=logits)
 
         if action is None:
@@ -118,7 +101,7 @@ class DCPPOBaseAgent(nn.Module):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(embedding),
+            self.critic(x),
         )
 
     def get_actions(
@@ -127,159 +110,52 @@ class DCPPOBaseAgent(nn.Module):
         """
         Return the actions based on the observation.
         """
-        embedding = self._get_embedding(preprocessed_obs)
-        logits = self.actor(embedding)
+        x = preprocessed_obs["input"]
+        logits = self.actor(x)
         dist = torch.distributions.Categorical(logits=logits)
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
         return actions.cpu().numpy()
 
-    def _get_embedding(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
-        x = preprocessed_obs["image"].transpose(1, 3).transpose(2, 3)
-        embedding = self.image_encoder(x)
-        embedding = embedding.reshape(embedding.shape[0], -1)
-
-        if self.extra_layer is not None:
-            embedding = self.extra_layer(embedding)
-
-        return embedding
-
-    @staticmethod
-    def create_default_image_encoder(
-        img_obs_space: gym.spaces.Box,
-    ) -> tuple[nn.Module, int]:
-        """
-        Create the default image encoder for the agent. This method does not
-        create an extra linear layer after the convolutional layers.
-        Return the image encoder and the final embedding size.
-        """
-        # Using the sync vector env the box dimension becomes:
-        # num_envs x h x w x c
-        h = img_obs_space.shape[1]
-        w = img_obs_space.shape[2]
-        embedding_size = ((h - 1) // 2 - 2) * ((w - 1) // 2 - 2) * 64
-        return (
-            nn.Sequential(
-                nn.Conv2d(3, 16, (2, 2)),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(16, 32, (2, 2)),
-                nn.ReLU(),
-                nn.Conv2d(32, 64, (2, 2)),
-                nn.ReLU(),
-            ),
-            embedding_size,
-        )
-
-    @staticmethod
-    def customise_image_encoder(
-        encoder_output_chanel: int = 4,
-        kernel_size: int = 2,
-        last_act: str = "relu",
-        use_extra_layer: bool = False,
-        extra_layer_out: int | None = None,
-        extra_layer_use_bias: bool = True,
-        agent_view_size: int = 3,
-    ) -> tuple[nn.Module, nn.Module | None, int]:
-        """
-        Customise the image encoder for the agent.
-        The image encoder consists of a convolutional layer, and an optional
-        extra linear layer can be added after the convolutional layer if
-        `use_extra_layer` is set to True.
-        Return the image encoder, extra layer if using, and the final embedding
-        size.
-        """
-        encoder_modules = []
-        encoder_modules.append(
-            nn.Conv2d(2, encoder_output_chanel, (kernel_size, kernel_size))
-        )
-        encoder_modules.append(nn.Tanh() if last_act == "tanh" else nn.ReLU())
-        embedding_size = (
-            agent_view_size - kernel_size + 1
-        ) ** 2 * encoder_output_chanel
-
-        final_embedding_size = extra_layer_out or embedding_size
-
-        if use_extra_layer:
-            extra_layer = nn.Sequential(
-                nn.Linear(
-                    embedding_size,
-                    final_embedding_size,
-                    bias=extra_layer_use_bias,
-                ),
-                nn.Tanh(),
-            )
-        else:
-            extra_layer = None
-
-        return (
-            nn.Sequential(*encoder_modules),
-            extra_layer,
-            final_embedding_size,
-        )
-
     def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
-            nn.Linear(self.embedding_size, 64),
+            nn.Linear(self.num_inputs, self.num_latent),
             nn.Tanh(),
-            nn.Linear(64, self.action_size),
+            nn.Linear(self.num_latent, self.action_size),
         )
 
     def _create_default_critic(self) -> nn.Module:
         return nn.Sequential(
-            nn.Linear(self.embedding_size, 64), nn.Tanh(), nn.Linear(64, 1)
+            nn.Linear(self.num_inputs, 64), nn.Tanh(), nn.Linear(64, 1)
         )
 
     def _init_params(self) -> None:
         self.apply(init_params)
 
 
-class DCPPOMLPAgent(DCPPOBaseAgent):
+class SSCPPOMLPAgent(SSCPPOBaseAgent):
     """
-    An agent for door corridor environment, with MLP actor.
-    To create a `DCPPOMLP` agent, pass in the following parameters:
+    An agent for door corridor environment, with a 2-layer MLP actor.
+    To create a `SSCPPOMLP` agent, pass in the following parameters:
+    - num_inputs (int): the number of input features
+    - num_latent (int): the number of latent features
     - action_size (int): the number of actions the agent can take
-    - img_obs_space (gym.spaces.Box): the observation space of the environment
-    - image_encoder (nn.Module): the image encoder for the agent
-        This should be created using the either of the 2 static methods --
-        `create_default_image_encoder()` or `customise_image_encoder()`
-    - embedding_size (int): the size of the embedding after the image encoder
-        This is calculated and return by the 2 static methods mentioned above.
-    - actor (nn.Module | None): an actor network.
-        By default, this is None, and will be created using the
-        `_create_default_actor()` method.
-    - extra_layer (nn.Module | None): an optional extra linear layer (with an
-        activation function) to add after the image encoder
-        By default, this is None. If you want to add an extra layer, you can
-        pass in a nn.Module, or create one using the `customise_image_encoder()`
-        method.
+
+    The actor and critic networks are created using `_create_default_actor()`
+    and `_create_default_critic()` methods respectively.
     """
 
 
-class DCPPONDNFBasedAgent(DCPPOBaseAgent):
+class SSCPPONDNFBasedAgent(SSCPPOBaseAgent):
     """
     Base class for agents using a neural DNF module as the actor.
     """
 
     actor: BaseNeuralDNF
 
-    def __init__(
-        self,
-        action_size: int,
-        img_obs_space: gym.spaces.Box,
-        image_encoder: nn.Module,
-        embedding_size: int,
-        actor: BaseNeuralDNF,
-        extra_layer: nn.Module | None = None,
-    ) -> None:
-        super().__init__(
-            action_size,
-            img_obs_space,
-            image_encoder,
-            embedding_size,
-            actor,
-            extra_layer,
-        )
+    def _create_default_actor(self) -> nn.Module:
+        # This method should be overridden by the subclass
+        raise NotImplementedError
 
     def get_aux_loss(
         self, preprocessed_obs: dict[str, Tensor]
@@ -287,47 +163,28 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
         """
         Return the auxiliary loss dictionary for the agent.
         The keys are:
-        - l_emb_dis: embedding discretisation loss
         - l_disj_l1_mod: disjunction weight regularisation loss
+        - l_tanh_conj: tanh conjunction output regularisation loss
         """
-        embedding = self._get_embedding(preprocessed_obs)
-
-        # Embedding discretisation loss
-        l_emb_dis = torch.mean(torch.abs(torch.abs(embedding) - 1))
-
         # Disjunction weight regularisation loss
         p_t = torch.cat(
             [p.view(-1) for p in self.actor.disjunctions.parameters()]
         )
         l_disj_l1_mod = torch.abs(p_t * (6 - torch.abs(p_t))).mean()
 
-        return {
-            "l_emb_dis": l_emb_dis,
-            "l_disj_l1_mod": l_disj_l1_mod,
-        }
+        # Push tanhed conjunction output towards -1 and 1 only
+        x = preprocessed_obs["input"]
+        tanh_conj = torch.tanh(self.actor.conjunctions(x))
+        l_tanh_conj = (1 - tanh_conj.abs()).mean()
 
-    def get_img_encoding(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        discretise_img_encoding: bool = False,
-    ) -> Tensor:
-        """
-        Return the image encoding of the observation.
-        This function should only be called during evaluation.
-        """
-        assert (
-            not self.training
-        ), "get_img_encoding() should only be called during evaluation!"
-        with torch.no_grad():
-            embedding = self._get_embedding(preprocessed_obs)
-            if discretise_img_encoding:
-                embedding = torch.sign(embedding)
-        return embedding
+        return {
+            "l_disj_l1_mod": l_disj_l1_mod,
+            "l_tanh_conj": l_tanh_conj,
+        }
 
     def get_actor_output(
         self,
         preprocessed_obs: dict[str, Tensor],
-        discretise_img_encoding: bool = False,
     ) -> Tensor:
         """
         Return the raw output of the actor (before tanh)
@@ -338,16 +195,13 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
         ), "get_actor_output() should only be called during evaluation!"
 
         with torch.no_grad():
-            embedding = self._get_embedding(preprocessed_obs)
-            if discretise_img_encoding:
-                embedding = torch.sign(embedding)
-            return self.actor(embedding)
+            x = preprocessed_obs["input"]
+            return self.actor(x)
 
     def get_actions(
         self,
         preprocessed_obs: dict[str, Tensor],
         use_argmax: bool = True,
-        discretise_img_encoding: bool = False,
     ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
         """
         This function should only be called during evaluation.
@@ -360,9 +214,7 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
         ), "get_actions() should only be called during evaluation!"
 
         with torch.no_grad():
-            raw_actions = self.get_actor_output(
-                preprocessed_obs, discretise_img_encoding
-            )
+            raw_actions = self.get_actor_output(preprocessed_obs)
         dist = torch.distributions.Categorical(logits=raw_actions)
         if use_argmax:
             actions = dist.probs.max(1)[1]  # type: ignore
@@ -372,170 +224,74 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
 
         return actions.cpu().numpy(), tanh_action.cpu().numpy()
 
-    @staticmethod
-    def customise_dnf_actor(
-        embedding_size: int,
-        num_actions: int,
-        num_conjunctions: int | None = None,
-        use_eo: bool = False,
-        use_mt: bool = False,
-    ) -> BaseNeuralDNF:
-        num_conjunctions = num_conjunctions or num_actions * 3
-        assert not (use_eo and use_mt), "Only one of EO and MT can be used!"
-        if use_eo:
-            actor_class = NeuralDNFEO
-        elif use_mt:
-            actor_class = NeuralDNFMutexTanh
-        else:
-            actor_class = NeuralDNF
-        return actor_class(embedding_size, num_conjunctions, num_actions, 1.0)
 
-
-class DCPPONDNFAgent(DCPPONDNFBasedAgent):
+class SSCPPONDNFAgent(SSCPPONDNFBasedAgent):
     """
     An agent for door corridor environment, with `NeuralDNF` as actor.
-    This agent is not expected to use as a training agent, but used as a
-    post-training evaluation agent from either a trained `DCPPONDNFEOAgent` or
-    `DCPPONDNFMutexTanhAgent`.
+    This agent is not usually expected to use for training, but if treating the
+    2 actions as binary classification (go left; not go left which is go right),
+    it can be used for training. This agent is more expected to be used as a
+    post-training evaluation agent from either a trained `SSCPPONDNFEOAgent` or
+    `SSCPPONDNFMutexTanhAgent`.
+    To create a `SSCPPONDNFEOAgent` agent, pass in the following parameters:
+    - num_inputs (int): the number of input features
+    - num_latent (int): the number of conjunctions allowed in NDNF-EO
+    - action_size (int): the number of actions the agent can take
     """
 
     actor: NeuralDNF
 
-    def __init__(
-        self,
-        action_size: int,
-        img_obs_space: gym.spaces.Box,
-        image_encoder: nn.Module,
-        embedding_size: int,
-        actor: NeuralDNF,
-        extra_layer: nn.Module | None = None,
-    ) -> None:
-        super().__init__(
-            action_size,
-            img_obs_space,
-            image_encoder,
-            embedding_size,
-            actor,
-            extra_layer,
+    def _create_default_actor(self) -> nn.Module:
+        return NeuralDNF(
+            self.num_inputs, self.num_latent, self.action_size, 1.0
         )
 
 
-class DCPPONDNFEOAgent(DCPPONDNFBasedAgent):
+class SSCPPONDNFEOAgent(SSCPPONDNFBasedAgent):
     """
     An agent for door corridor environment, with `NeuralDNFEO` actor.
-    This agent is used for training, and to be converted to a `DCPPONDNFAgent`
+    This agent is used for training, and to be converted to a `SSCPPONDNFAgent`
     for post-training evaluation.
-    To create a `DCPPONDNFEOAgent` agent, pass in the following parameters:
+    To create a `SSCPPONDNFEOAgent` agent, pass in the following parameters:
+    - num_inputs (int): the number of input features
+    - num_latent (int): the number of conjunctions allowed in NDNF-EO
     - action_size (int): the number of actions the agent can take
-    - img_obs_space (gym.spaces.Box): the observation space of the environment
-    - image_encoder (nn.Module): the image encoder for the agent
-        This should be created using the either of the 2 static methods --
-        `create_default_image_encoder()` or `customise_image_encoder()`
-    - embedding_size (int): the size of the embedding after the image encoder
-        This is calculated and return by the 2 static methods mentioned above.
-    - actor (NeuralDNFEO): an `NeuralDNFEO` actor.
-        This should be created using the `customise_dnf_actor()` method.
-    - extra_layer (nn.Module | None): an optional extra linear layer (with an
-        activation function) to add after the image encoder
-        By default, this is None. If you want to add an extra layer, you can
-        pass in a nn.Module, or create one using the `customise_image_encoder()`
-        method.
     """
 
     actor: NeuralDNFEO
 
-    def __init__(
-        self,
-        action_size: int,
-        img_obs_space: gym.spaces.Box,
-        image_encoder: nn.Module,
-        embedding_size: int,
-        actor: NeuralDNFEO,
-        extra_layer: nn.Module | None = None,
-    ) -> None:
-        super().__init__(
-            action_size,
-            img_obs_space,
-            image_encoder,
-            embedding_size,
-            actor,
-            extra_layer,
+    def _create_default_actor(self) -> nn.Module:
+        return NeuralDNFEO(
+            self.num_inputs, self.num_latent, self.action_size, 1.0
         )
 
-    def to_ndnf_agent(self) -> DCPPONDNFAgent:
+    def to_ndnf_agent(self) -> SSCPPONDNFAgent:
         """
-        Convert this agent to a DCPPONDNFAgent.
+        Convert this agent to a SSCPPONDNFAgent.
         """
-        return DCPPONDNFAgent(
-            self.action_size,
-            self.img_obs_space,
-            self.image_encoder,
-            self.embedding_size,
-            self.actor.to_ndnf(),
-            self.extra_layer,
+        ndnf_agent = SSCPPONDNFAgent(
+            self.num_inputs, self.num_latent, self.action_size
         )
-
-    def get_aux_loss(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> dict[str, Tensor]:
-        """
-        Return the auxiliary loss dictionary for the agent.
-        The keys are:
-        - l_emb_dis: embedding discretisation loss
-        - l_disj_l1_mod: disjunction weight regularisation loss
-        - l_tanh_conj: tanh conjunction output regularisation loss
-        """
-        aux_loss_dict = super().get_aux_loss(preprocessed_obs)
-
-        embedding = self._get_embedding(preprocessed_obs)
-
-        # Push tanhed conjunction output towards -1 and 1 only
-        tanh_conj = torch.tanh(self.actor.conjunctions(embedding))
-        l_tanh_conj = (1 - tanh_conj.abs()).mean()
-
-        return {**aux_loss_dict, "l_tanh_conj": l_tanh_conj}
+        ndnf_agent.actor = self.actor.to_ndnf()
+        return ndnf_agent
 
 
-class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
+class SSCPPONDNFMutexTanhAgent(SSCPPONDNFBasedAgent):
     """
     An agent for door corridor environment, with `NeuralDNFMutexTanh` actor.
-    This agent is used for training. It can be converted to a `DCPPONDNFAgent`
+    This agent is used for training. It can be converted to a `SSCPPONDNFAgent`
     for post-training evaluation, or used directly for evaluation.
-    To create a `DCPPONDNFMutexTanhAgent` agent, pass in the following parameters:
+    To create a `SSCPPONDNFMutexTanhAgent` agent, pass in the following parameters:
+    - num_inputs (int): the number of input features
+    - num_latent (int): the number of conjunctions allowed in the NDNF-MT
     - action_size (int): the number of actions the agent can take
-    - img_obs_space (gym.spaces.Box): the observation space of the environment
-    - image_encoder (nn.Module): the image encoder for the agent
-        This should be created using the either of the 2 static methods --
-        `create_default_image_encoder()` or `customise_image_encoder()`
-    - embedding_size (int): the size of the embedding after the image encoder
-        This is calculated and return by the 2 static methods mentioned above.
-    - actor (NeuralDNFMutexTanh): a `NeuralDNFMutexTanh` actor
-        This should be created using the `customise_dnf_actor()` method.
-    - extra_layer (nn.Module | None): an optional extra linear layer (with an
-        activation function) to add after the image encoder
-        By default, this is None. If you want to add an extra layer, you can
-        pass in a nn.Module, or create one using the `customise_image_encoder()`
-        method.
     """
 
     actor: NeuralDNFMutexTanh
 
-    def __init__(
-        self,
-        action_size: int,
-        img_obs_space: gym.spaces.Box,
-        image_encoder: nn.Module,
-        embedding_size: int,
-        actor: NeuralDNFMutexTanh,
-        extra_layer: nn.Module | None = None,
-    ) -> None:
-        super().__init__(
-            action_size,
-            img_obs_space,
-            image_encoder,
-            embedding_size,
-            actor,
-            extra_layer,
+    def _create_default_actor(self) -> nn.Module:
+        return NeuralDNFMutexTanh(
+            self.num_inputs, self.num_latent, self.action_size, 1.0
         )
 
     def get_action_and_value(
@@ -546,8 +302,8 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
         distribution, and the value of the state.
         This function is used in PPO algorithm
         """
-        embedding = self._get_embedding(preprocessed_obs)
-        logits = self.actor(embedding)
+        x = preprocessed_obs["input"]
+        logits = self.actor(x)
         dist = torch.distributions.Categorical(probs=(logits + 1) / 2)
 
         if action is None:
@@ -557,13 +313,12 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(embedding),
+            self.critic(x),
         )
 
     def get_actor_output(
         self,
         preprocessed_obs: dict[str, Tensor],
-        discretise_img_encoding: bool = False,
         raw_output: bool = True,
         mutex_tanh: bool = False,
     ) -> Tensor:
@@ -580,18 +335,16 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
         "mutex_tanh can be True!"
 
         with torch.no_grad():
-            embedding = self._get_embedding(preprocessed_obs)
-            if discretise_img_encoding:
-                embedding = torch.sign(embedding)
+            x = preprocessed_obs["input"]
+
         if raw_output:
-            return self.actor.get_raw_output(embedding)
-        return self.actor(embedding)
+            return self.actor.get_raw_output(x)
+        return self.actor(x)
 
     def get_actions(
         self,
         preprocessed_obs: dict[str, Tensor],
         use_argmax: bool = True,
-        discretise_img_encoding: bool = False,
     ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
         """
         This function should only be called during evaluation.
@@ -604,15 +357,13 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
         ), "get_actions() should only be called during evaluation!"
 
         with torch.no_grad():
-            embedding = self._get_embedding(preprocessed_obs)
-            if discretise_img_encoding:
-                embedding = torch.sign(embedding)
-            act = self.actor(embedding)
+            x = preprocessed_obs["input"]
+            act = self.actor(x)
             dist = torch.distributions.Categorical(probs=(act + 1) / 2)
-            tanh_actions = torch.tanh(self.actor.get_raw_output(embedding))
+            tanh_actions = torch.tanh(self.actor.get_raw_output(x))
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
-        tanh_actions = torch.tanh(self.actor.get_raw_output(embedding))
+        tanh_actions = torch.tanh(self.actor.get_raw_output(x))
         return (
             actions.detach().cpu().numpy(),
             tanh_actions.detach().cpu().numpy(),
@@ -624,21 +375,16 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
         """
         Return the auxiliary loss dictionary for the agent.
         The keys are:
-        - l_emb_dis: embedding discretisation loss
         - l_disj_l1_mod: disjunction weight regularisation loss
         - l_tanh_conj: tanh conjunction output regularisation loss
         - l_mt_ce2: mutux tanh auxiliary loss
         """
         aux_loss_dict = super().get_aux_loss(preprocessed_obs)
 
-        embedding = self._get_embedding(preprocessed_obs)
+        x = preprocessed_obs["input"]
 
-        # Push tanhed conjunction output towards -1 and 1 only
-        tanh_conj = torch.tanh(self.actor.conjunctions(embedding))
-        l_tanh_conj = (1 - tanh_conj.abs()).mean()
-
-        act_out = self.actor(embedding)
-        tanh_out = torch.tanh(self.actor.get_raw_output(embedding))
+        act_out = self.actor(x)
+        tanh_out = torch.tanh(self.actor.get_raw_output(x))
 
         p_k = (act_out + 1) / 2
         p_k_hat = (tanh_out + 1) / 2
@@ -649,83 +395,84 @@ class DCPPONDNFMutexTanhAgent(DCPPONDNFBasedAgent):
 
         return {
             **aux_loss_dict,
-            "l_tanh_conj": l_tanh_conj,
             "l_mt_ce2": l_mt_ce2,
         }
 
 
-def construct_model(
-    cfg: DictConfig,
-    num_actions: int,
+def ss_corridor_preprocess_obs(
+    use_state_no_as_obs: bool,
     use_ndnf: bool,
-    img_obs_space: gym.spaces.Box,
-) -> DCPPOBaseAgent:
-    if "customised_image_encoder" in cfg:
-        (
-            img_encoder,
-            extra_layer,
-            embedding_size,
-        ) = DCPPOBaseAgent.customise_image_encoder(
-            **cfg["customised_image_encoder"]
-        )
+    corridor_length: int,
+    obs: dict[str, np.ndarray],
+    device: torch.device | None = None,
+) -> Tensor:
+    if use_state_no_as_obs:
+        obs_s = obs["agent_location"]
+        state = np.zeros((len(obs_s), corridor_length), dtype=np.float32)
+        state[range(len(obs_s)), obs["agent_location"]] = 1
     else:
-        (
-            img_encoder,
-            embedding_size,
-        ) = DCPPOBaseAgent.create_default_image_encoder(img_obs_space)
-        extra_layer = None
-
-    if "customised_actor" in cfg:
-        actor = nn.Sequential(
-            nn.Linear(embedding_size, cfg["customised_actor"]["hidden_size"]),
-            nn.Tanh(),
-            nn.Linear(cfg["customised_actor"]["hidden_size"], num_actions),
-        )
-    else:
-        actor = None
+        state = np.array(obs["wall_status"], dtype=np.float32)
 
     if use_ndnf:
-        ndnf_actor = DCPPONDNFBasedAgent.customise_dnf_actor(
-            embedding_size=embedding_size,
-            num_actions=num_actions,
-            num_conjunctions=(
-                cfg["num_conjunctions"] if "num_conjunctions" in cfg else None
-            ),
-            use_eo=cfg["use_eo"],
-            use_mt=cfg["use_mt"],
-        )
-        model_class = (
-            DCPPONDNFEOAgent
-            if cfg["use_eo"]
-            else (DCPPONDNFMutexTanhAgent if cfg["use_mt"] else DCPPONDNFAgent)
-        )
-        return model_class(
-            action_size=num_actions,
-            img_obs_space=img_obs_space,
-            actor=ndnf_actor,  # type: ignore
-            image_encoder=img_encoder,
-            extra_layer=extra_layer,
-            embedding_size=embedding_size,
-        )
+        state = np.where(state == 0, -1, state)
 
-    return DCPPOMLPAgent(
-        action_size=num_actions,
-        img_obs_space=img_obs_space,
-        image_encoder=img_encoder,
-        embedding_size=embedding_size,
-        actor=actor,
-        extra_layer=extra_layer,
-    )
+    return torch.Tensor(state, device=device)
 
 
-def make_env(seed: int, idx: int, capture_video: bool):
+def construct_model(
+    num_inputs: int,
+    num_latent: int,
+    action_size: int,
+    use_ndnf: bool,
+    use_eo: bool = False,
+    use_mt: bool = False,
+) -> SSCPPOBaseAgent:
+    if not use_ndnf:
+        return SSCPPOMLPAgent(num_inputs, num_latent, action_size)
+
+    assert not (
+        use_eo and action_size == 1
+    ), "EO constraint should not be active if there's only one action."
+    assert not (
+        use_mt and action_size == 1
+    ), "Mutex Tanh mode should not be active if there's only one action."
+    assert not (
+        use_eo and use_mt
+    ), "EO constraint and Mutex Tanh mode should not be active together."
+
+    if not use_eo and not use_mt:
+        return SSCPPONDNFAgent(num_inputs, num_latent, action_size)
+    if use_eo and not use_mt:
+        return SSCPPONDNFEOAgent(num_inputs, num_latent, action_size)
+    return SSCPPONDNFMutexTanhAgent(num_inputs, num_latent, action_size)
+
+
+def construct_single_environment(
+    cfg: DictConfig, render_mode: str = "ansi"
+) -> BaseSpecialStateCorridorEnv:
+    if "long_corridor" in cfg:
+        env = LongSSCorridorEnv(
+            render_mode=render_mode,
+            customisation_cfg_dict=cfg["long_corridor"],
+        )
+    elif "circular_corridor" in cfg:
+        env = CircularSSCorridorEnv(
+            render_mode=render_mode,
+            customisation_cfg_dict=cfg["circular_corridor"],
+        )
+    else:
+        env = SmallSSCorridorEnv(render_mode=render_mode)
+    return env
+
+
+def make_env(cfg: DictConfig, seed: int, idx: int, capture_video: bool):
     def thunk():
         if capture_video and idx == 0:
-            env = DoorCorridorEnv(render_mode="rgb_array")
+            env = construct_single_environment(cfg, render_mode="rgb_array")
             video_dir = Path("videos")
             env = RecordVideo(env, str(video_dir.absolute()))
         else:
-            env = DoorCorridorEnv()
+            env = construct_single_environment(cfg)
         env = RecordEpisodeStatistics(env)
 
         env.action_space.seed(seed)
@@ -739,8 +486,9 @@ def train_ppo(
     full_experiment_name: str,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, DCPPOBaseAgent]:
+) -> tuple[Path | None, SSCPPOBaseAgent]:
     use_ndnf = "ndnf" in full_experiment_name
+    use_state_no_as_obs = training_cfg["use_state_no_as_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
     minibatch_size = int(batch_size // training_cfg["num_minibatches"])
     num_iterations = int(training_cfg["total_timesteps"] // batch_size)
@@ -764,18 +512,25 @@ def train_ppo(
 
     # Env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(i, i, False) for i in range(training_cfg["num_envs"])]
+        [
+            make_env(training_cfg, i, i, False)
+            for i in range(training_cfg["num_envs"])
+        ]
     )
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
     # Set up the model
+    single_env = construct_single_environment(training_cfg)
+    num_inputs = single_env.corridor_length if use_state_no_as_obs else 2
     agent = construct_model(
-        training_cfg,
-        DoorCorridorEnv.get_num_actions(),
-        use_ndnf,
-        envs.observation_space["image"],  # type: ignore
+        num_inputs=num_inputs,
+        num_latent=training_cfg["model_latent_size"],
+        action_size=int(envs.single_action_space.n),
+        use_ndnf=use_ndnf,
+        use_eo="use_eo" in training_cfg and training_cfg["use_eo"],
+        use_mt="use_mt" in training_cfg and training_cfg["use_mt"],
     )
     agent.train()
     agent.to(device)
@@ -788,10 +543,7 @@ def train_ppo(
     num_steps: int = training_cfg["num_steps"]
     num_envs: int = training_cfg["num_envs"]
 
-    obs_shape = (num_steps, num_envs) + envs.single_observation_space[  # type: ignore
-        "image"
-    ].shape
-    # obs_shape: (num_steps, num_envs, agent_view_size, agent_view_size, 2)
+    obs_shape = (num_steps, num_envs, num_inputs)
     obs = torch.zeros(obs_shape).to(device)
 
     action_shape = (num_steps, num_envs) + envs.single_action_space.shape  # type: ignore
@@ -804,14 +556,23 @@ def train_ppo(
     values = torch.zeros((num_steps, num_envs)).to(device)
 
     # TRY NOT TO MODIFY: start the game
+    process_obs = lambda obs: ss_corridor_preprocess_obs(
+        use_state_no_as_obs=use_state_no_as_obs,
+        use_ndnf=use_ndnf,
+        corridor_length=single_env.corridor_length,
+        obs=obs,
+        device=device,
+    )
     global_step = 0
     start_time = time.time()
     next_obs_dict, _ = envs.reset()
-    next_obs = torch.Tensor(next_obs_dict["image"]).to(device)
-    next_obs_dict = {"image": next_obs}
+    next_obs = process_obs(next_obs_dict)
+    next_obs_dict = {"input": next_obs}
     next_done = torch.zeros(num_envs).to(device)
 
-    if isinstance(agent, DCPPONDNFBasedAgent):
+    last_episodic_return = None
+
+    if isinstance(agent, SSCPPONDNFBasedAgent):
         dds_cfg = training_cfg["dds"]
         dds = DeltaDelayedExponentialDecayScheduler(
             initial_delta=dds_cfg["initial_delta"],
@@ -849,8 +610,8 @@ def train_ppo(
             )
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).float().to(device).view(-1)
-            next_obs = torch.Tensor(next_obs_dict["image"]).to(device)
-            next_obs_dict = {"image": next_obs}
+            next_obs = process_obs(next_obs_dict)
+            next_obs_dict = {"input": next_obs}
             next_done = torch.Tensor(next_done).to(device)
 
             if "final_info" in infos:
@@ -869,6 +630,7 @@ def train_ppo(
                             info["episode"]["r"],
                             global_step,
                         )
+                        last_episodic_return = info["episode"]["r"]
                         writer.add_scalar(
                             "charts/episodic_length",
                             info["episode"]["l"],
@@ -902,9 +664,7 @@ def train_ppo(
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape(
-            (-1,) + envs.single_observation_space["image"].shape  # type: ignore
-        )
+        b_obs = obs.reshape((-1, num_inputs))
         b_log_probs = log_probs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)  # type: ignore
         b_advantages = advantages.reshape(-1)
@@ -921,7 +681,7 @@ def train_ppo(
                 mb_inds = b_inds[start:end]
 
                 _, new_log_prob, entropy, new_val = agent.get_action_and_value(
-                    {"image": b_obs[mb_inds]}, b_actions.long()[mb_inds]
+                    {"input": b_obs[mb_inds]}, b_actions.long()[mb_inds]
                 )
                 log_ratio = new_log_prob - b_log_probs[mb_inds]
                 ratio = log_ratio.exp()
@@ -976,13 +736,8 @@ def train_ppo(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                if isinstance(agent, DCPPONDNFBasedAgent):
+                if isinstance(agent, SSCPPONDNFBasedAgent):
                     aux_loss_dict = agent.get_aux_loss(next_obs_dict)
-                    l_emb_dis_lambda = training_cfg["aux_loss"][
-                        "emb_dis_lambda"
-                    ]
-                    l_emb_dis = aux_loss_dict["l_emb_dis"]
-                    loss += l_emb_dis_lambda * l_emb_dis
 
                     l_disj_l1_mod_lambda = training_cfg["aux_loss"][
                         "dis_l1_mod_lambda"
@@ -990,14 +745,13 @@ def train_ppo(
                     l_disj_l1_mod = aux_loss_dict["l_disj_l1_mod"]
                     loss += l_disj_l1_mod_lambda * l_disj_l1_mod
 
-                    if isinstance(agent, DCPPONDNFEOAgent):
-                        l_tanh_conj_lambda = training_cfg["aux_loss"][
-                            "tanh_conj_lambda"
-                        ]
-                        l_tanh_conj = aux_loss_dict["l_tanh_conj"]
-                        loss += l_tanh_conj_lambda * l_tanh_conj
+                    l_tanh_conj_lambda = training_cfg["aux_loss"][
+                        "tanh_conj_lambda"
+                    ]
+                    l_tanh_conj = aux_loss_dict["l_tanh_conj"]
+                    loss += l_tanh_conj_lambda * l_tanh_conj
 
-                    if isinstance(agent, DCPPONDNFMutexTanhAgent):
+                    if isinstance(agent, SSCPPONDNFMutexTanhAgent):
                         l_tanh_conj_lambda = training_cfg["aux_loss"][
                             "tanh_conj_lambda"
                         ]
@@ -1028,7 +782,7 @@ def train_ppo(
             np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
         )
 
-        if isinstance(agent, DCPPONDNFBasedAgent):
+        if isinstance(agent, SSCPPONDNFBasedAgent):
             delta_dict = dds.step(agent.actor)
             new_delta = delta_dict["new_delta_vals"][0]
             old_delta = delta_dict["old_delta_vals"][0]
@@ -1048,8 +802,7 @@ def train_ppo(
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
         )
-        if isinstance(agent, DCPPONDNFBasedAgent):
-            writer.add_scalar("losses/l_emb_dis", l_emb_dis.item(), global_step)
+        if isinstance(agent, SSCPPONDNFBasedAgent):
             writer.add_scalar(
                 "losses/l_disj_l1_mod", l_disj_l1_mod.item(), global_step
             )
@@ -1057,15 +810,19 @@ def train_ppo(
                 "losses/l_tanh_conj", l_tanh_conj.item(), global_step
             )
 
-            if isinstance(agent, DCPPONDNFMutexTanhAgent):
+            if isinstance(agent, SSCPPONDNFMutexTanhAgent):
                 writer.add_scalar(
                     "losses/l_mt_ce2", l_mt_ce2.item(), global_step
                 )
 
-        if isinstance(agent, DCPPONDNFBasedAgent):
+        if isinstance(agent, SSCPPONDNFBasedAgent):
             writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
             if new_delta != old_delta:  # type: ignore
-                print(f"i={iteration} old delta={old_delta:.3f}\tnew delta={new_delta:.3f}")  # type: ignore
+                print(
+                    f"i={iteration}\t"
+                    f"old delta={old_delta:.3f} new delta={new_delta:.3f}\t"
+                    f"last episodic_return={last_episodic_return}"
+                )  # type: ignore
 
         writer.add_scalar(
             "charts/SPS",
@@ -1073,9 +830,9 @@ def train_ppo(
             global_step,
         )
 
-        # If training DCPPONeuralDNFMutexTanhAgent, plot y_k, hat_y_k
-        if isinstance(agent, DCPPONDNFMutexTanhAgent):
-            ret = plot_y_k_hat_y_k(agent)
+        # If training SSCPPONeuralDNFMutexTanhAgent, plot y_k, hat_y_k
+        if isinstance(agent, SSCPPONDNFMutexTanhAgent):
+            ret = plot_y_k_hat_y_k(agent, single_env, use_state_no_as_obs)
             for key, value in ret.items():
                 writer.add_scalar(f"mt/{key}", value, global_step)
 
@@ -1093,22 +850,26 @@ def train_ppo(
     return None, agent
 
 
-def plot_y_k_hat_y_k(model: DCPPONDNFMutexTanhAgent) -> dict[str, Any]:
+def plot_y_k_hat_y_k(
+    model: SSCPPONDNFMutexTanhAgent,
+    single_env: BaseSpecialStateCorridorEnv,
+    use_state_no_as_obs: bool,
+) -> dict[str, Any]:
+    if use_state_no_as_obs:
+        # Take state 0 and one of the special states
+        state = np.zeros((2, single_env.corridor_length), dtype=np.float32)
+        state[[0, 1], [0, single_env.special_states[0]]] = 1
+    else:
+        # Take all possible wall status
+        # Note that [1, 0] or [0, 1] might never be seen in the circular
+        # corridor. If not circular, the agent might never see [1, 0] or [0, 1]
+        # if the start/goal is not at the edge.
+        state = np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32)
+    state = np.where(state == 0, -1, state)
+
     obs = {
-        "image": torch.Tensor(
-            [
-                [
-                    [[0, 0], [0, 0], [0, 0]],
-                    [[2, 0], [2, 0], [2, 0]],
-                    [[2, 0], [4, 0], [3, 1]],
-                ],  # this is the observation at the first time step
-                [
-                    [[0, 0], [0, 0], [0, 0]],
-                    [[2, 0], [3, 1], [2, 0]],
-                    [[2, 0], [4, 0], [2, 0]],
-                ],  # this is the second observation if we turn right after the first
-            ],
-            device=next(model.parameters()).device,
+        "input": torch.Tensor(
+            state, device=next(model.actor.parameters()).device
         )
     }
 
@@ -1135,18 +896,26 @@ def plot_y_k_hat_y_k(model: DCPPONDNFMutexTanhAgent) -> dict[str, Any]:
 def run_experiment(cfg: DictConfig) -> None:
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
-    full_experiment_name = training_cfg["experiment_name"] + f"_{seed}"
+
+    # Expect the experiment name to be in the format of
+    # {corridor env name}_ppo_{model type}_...
+    name_list = training_cfg["experiment_name"].split("_")
+    # Insert "sn"/"ws" between corridor env name and ppo to indicate whether the
+    # environment is POMDP or MDP
+    name_list.insert(1, "sn" if training_cfg["use_state_no_as_obs"] else "ws")
+    # Add seed at the end of the name list
+    name_list.append(str(seed))
+    full_experiment_name = "_".join(name_list)
 
     # Set random seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
+    # For wandb and output dir name, capitalise the first 3 words:
+    # corridor env name, sn/ws, ppo
     run_dir_name = "-".join(
-        [
-            (s.upper() if i in [0, 1] else s)
-            for i, s in enumerate(full_experiment_name.split("_"))
-        ]
+        [(s.upper() if i in [0, 1, 2] else s) for i, s in enumerate(name_list)]
     )
 
     use_wandb = cfg["wandb"]["use_wandb"]

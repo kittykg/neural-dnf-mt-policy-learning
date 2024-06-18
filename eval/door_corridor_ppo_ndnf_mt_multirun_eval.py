@@ -1,5 +1,6 @@
 # This script evaluates the NDNF MT agent on the DoorCorridor environment
-
+from copy import deepcopy
+import json
 import logging
 from pathlib import Path
 import random
@@ -120,7 +121,7 @@ def simulate_fn(
     return logs
 
 
-def post_training(model: DCPPONDNFMutexTanhAgent):
+def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent):
     envs = gym.vector.SyncVectorEnv([make_env(i, i, False) for i in range(8)])
 
     simulate = lambda action_fn: simulate_fn(envs, action_fn)
@@ -172,93 +173,158 @@ def post_training(model: DCPPONDNFMutexTanhAgent):
         log.info("NDNF MT dis is not mutually exclusive!")
         return FailureCode.FAIL_AT_EVAL_NDNF_MT_DIS_NOT_ME
 
+    log.info("======================================")
+
     # Stage 2: Prune the model
-    log.info("\nPruning the model...")
+    def prune_model() -> FailureCode | None:
+        log.info("Pruning the model...")
 
-    def comparison_fn(og_log, new_log):
-        if not new_log["mutual_exclusivity"]:
-            return False
-        if new_log["missing_actions"]:
-            return False
-        return (
-            np.array(og_log["return_per_episode"]).mean()
-            - np.array(new_log["return_per_episode"]).mean()
-            <= 0
+        def comparison_fn(og_log, new_log):
+            if not new_log["mutual_exclusivity"]:
+                return False
+            if new_log["missing_actions"]:
+                return False
+            return (
+                np.array(og_log["return_per_episode"]).mean()
+                - np.array(new_log["return_per_episode"]).mean()
+                <= 0
+            )
+
+        sd_list = []
+        prune_count = 0
+
+        while True:
+            log.info(f"Pruning iteration: {prune_count+1}")
+            prune_result_dict = prune_neural_dnf(
+                model.actor,
+                lambda: simulate(_ndnf_mt_dis_action_fn),
+                {},
+                comparison_fn,
+                options={
+                    "skip_prune_disj_with_empty_conj": False,
+                    "skip_last_prune_disj": True,
+                },
+            )
+
+            important_keys = [
+                "disj_prune_count_1",
+                "unused_conjunctions_2",
+                "conj_prune_count_3",
+                "prune_disj_with_empty_conj_count_4",
+            ]
+
+            log.info(
+                f"Pruned disjunction count: {prune_result_dict['disj_prune_count_1']}"
+            )
+            log.info(
+                f"Removed unused conjunction count: {prune_result_dict['unused_conjunctions_2']}"
+            )
+            log.info(
+                f"Pruned conjunction count: {prune_result_dict['conj_prune_count_3']}"
+            )
+            log.info(
+                f"Pruned disj with empty conj: {prune_result_dict['prune_disj_with_empty_conj_count_4']}"
+            )
+
+            post_prune_ndnf_mt_dis_log = _simulate_with_print(
+                _ndnf_mt_dis_action_fn,
+                f"NDNF MT dis - (Prune iteration: {prune_count})",
+            )
+
+            if is_truncated(post_prune_ndnf_mt_dis_log):
+                log.info("Post prune NDNF MT dis losses performance!")
+                return FailureCode.FAIL_AT_PRUNE_TRUNCATED
+            if post_prune_ndnf_mt_dis_log["missing_actions"]:
+                log.info("Post prune NDNF MT dis has missing actions!")
+                return FailureCode.FAIL_AT_PRUNE_MISS_ACTION
+            if not post_prune_ndnf_mt_dis_log["mutual_exclusivity"]:
+                log.info("Post prune NDNF MT dis is not mutually exclusive!")
+                return FailureCode.FAIL_AT_PRUNE_NOT_ME
+
+            # If any of the important keys has the value not 0, then we should continue pruning
+            if any([prune_result_dict[k] != 0 for k in important_keys]):
+                sd_list.append(deepcopy(model.state_dict()))
+                prune_count += 1
+            else:
+                break
+
+    # Check for checkpoints
+    # If the model is already pruned, then we load the pruned model
+    # Otherwise, we prune the model and save the pruned model
+    if (model_dir / "model_mr_pruned.pth").exists():
+        pruned_state = torch.load(
+            model_dir / "model_mr_pruned.pth", map_location=DEVICE
         )
+        model.load_state_dict(pruned_state)
+    else:
+        ret = prune_model()
+        if ret is not None and isinstance(ret, FailureCode):
+            return ret
+        torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
 
-    prune_result_dict = prune_neural_dnf(
-        model.actor,
-        lambda: simulate(_ndnf_mt_dis_action_fn),
-        {},
-        comparison_fn,
-        options={
-            "skip_prune_disj_with_empty_conj": False,
-            "skip_last_prune_disj": True,
-        },
-    )
+    _simulate_with_print(_ndnf_mt_dis_action_fn, f"NDNF MT dis pruned")
 
-    log.info(
-        f"Pruned disjunction count: {prune_result_dict['disj_prune_count_1']}"
-    )
-    log.info(
-        f"Removed unused conjunction count: {prune_result_dict['unused_conjunctions_2']}"
-    )
-    log.info(
-        f"Pruned conjunction count: {prune_result_dict['conj_prune_count_3']}"
-    )
-    log.info(
-        f"Pruned disj with empty conj: {prune_result_dict['prune_disj_with_empty_conj_count_4']}"
-    )
-    post_prune_ndnf_mt_dis_log = _simulate_with_print(
-        _ndnf_mt_dis_action_fn, "NDNF MT dis (pruned)"
-    )
-    log.info(model.actor.conjunctions.weights)
-    log.info(model.actor.disjunctions.weights)
-
-    post_prune_conj_weight = model.actor.conjunctions.weights.data.clone()
-    post_prune_disj_weight = model.actor.disjunctions.weights.data.clone()
-    if is_truncated(post_prune_ndnf_mt_dis_log):
-        log.info("Post prune NDNF MT dis losses performance!")
-        return FailureCode.FAIL_AT_PRUNE_TRUNCATED
-    if post_prune_ndnf_mt_dis_log["missing_actions"]:
-        log.info("Post prune NDNF MT dis has missing actions!")
-        return FailureCode.FAIL_AT_PRUNE_MISS_ACTION
-    if not post_prune_ndnf_mt_dis_log["mutual_exclusivity"]:
-        log.info("Post prune NDNF MT dis is not mutually exclusive!")
-        return FailureCode.FAIL_AT_PRUNE_NOT_ME
+    log.info("======================================")
 
     # 3. Thresholding
-    log.info("\nThresholding the model...")
     og_conj_weight = model.actor.conjunctions.weights.data.clone()
     og_disj_weight = model.actor.disjunctions.weights.data.clone()
 
-    threshold_upper_bound = get_thresholding_upper_bound(model.actor)
-    t_vals = torch.arange(0, threshold_upper_bound, 0.01)
+    def threshold_model() -> FailureCode | list[float]:
+        log.info("Thresholding the model...")
 
-    result_dicts = []
-    log.info(f"Threshold upper bound: {threshold_upper_bound}")
+        threshold_upper_bound = get_thresholding_upper_bound(model.actor)
+        log.info(f"Threshold upper bound: {threshold_upper_bound}")
 
-    for v in t_vals:
-        apply_threshold(model.actor, og_conj_weight, og_disj_weight, v)
-        result_dicts.append(simulate(_ndnf_mt_dis_action_fn))
+        t_vals = torch.arange(0, threshold_upper_bound, 0.01)
+        result_dicts = []
+        for v in t_vals:
+            apply_threshold(model.actor, og_conj_weight, og_disj_weight, v)
+            result_dicts.append(simulate(_ndnf_mt_dis_action_fn))
 
-    t_vals_candidates = []
-    for i, d in enumerate(result_dicts):
-        if (
-            (
-                np.array(d["return_per_episode"]).mean()
-                < np.array(og_ndnf_mt_dis_logs["return_per_episode"]).mean()
-            )
-            or d["missing_actions"]
-            or not d["mutual_exclusivity"]
-        ):
-            continue
-        t_vals_candidates.append(t_vals[i].item())
-    if len(t_vals_candidates) == 0:
-        log.info("No thresholding candidate found!")
-        return FailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+        t_vals_candidates = []
+        for i, d in enumerate(result_dicts):
+            if (
+                (
+                    np.array(d["return_per_episode"]).mean()
+                    < np.array(og_ndnf_mt_dis_logs["return_per_episode"]).mean()
+                )
+                or d["missing_actions"]
+                or not d["mutual_exclusivity"]
+            ):
+                continue
+            t_vals_candidates.append(t_vals[i].item())
+        if len(t_vals_candidates) == 0:
+            log.info("No thresholding candidate found!")
+            return FailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
 
-    log.info(f"t_vals_candidates: {t_vals_candidates}")
+        log.info(f"t_vals_candidates: {t_vals_candidates}")
+        return t_vals_candidates
+
+    # Check for checkpoints
+    # If the thresholding process is done, then we load the threshold candidates
+    # Otherwise, we threshold the model and save the threshold candidates
+    if (model_dir / "threshold_val_candidates.json").exists():
+        with open(model_dir / "threshold_val_candidates.json", "r") as f:
+            threshold_json_dict = json.load(f)
+            if not threshold_json_dict["threshold_success"]:
+                log.info(
+                    "Thresholding failed with no candidate in the previous run!"
+                )
+                return FailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+            t_vals_candidates = threshold_json_dict["threshold_vals"]
+    else:
+        ret = threshold_model()
+        threshold_json_dict = {}
+        with open(model_dir / "threshold_val_candidates.json", "w") as f:
+            if isinstance(ret, FailureCode):
+                threshold_json_dict["threshold_success"] = False
+                return ret
+            t_vals_candidates = ret
+            threshold_json_dict["threshold_success"] = True
+            threshold_json_dict["threshold_vals"] = t_vals_candidates
+            json.dump(threshold_json_dict, f)
+
     log.info(f"Applying threshold: {t_vals_candidates[0]}")
     apply_threshold(
         model.actor,
@@ -271,11 +337,20 @@ def post_training(model: DCPPONDNFMutexTanhAgent):
     log.info(model.actor.disjunctions.weights.data)
     log.info("\n")
 
+    log.info("======================================")
+
     # 4. Rule extraction
-    rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
+    if (model_dir / "asp_rules.txt").exists():
+        with open(model_dir / "asp_rules.txt", "r") as f:
+            rules = f.readlines()
+    else:
+        rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
+        with open(model_dir / "asp_rules.txt", "w") as f:
+            f.writelines(rules)
     for r in rules:
         log.info(r)
-    log.info("\n")
+
+    log.info("======================================")
 
     # 5. Evaluate Rule
     obs, _ = single_env.reset()
@@ -365,7 +440,7 @@ def post_train_eval(eval_cfg: DictConfig):
         model.eval()
 
         log.info(f"Experiment {model_dir.name} loaded!")
-        ret_code = post_training(model)
+        ret_code = post_training(model_dir, model)
         ret_dict[ret_code].append(s)  # use the random seed as the identifier
         log.info("======================================\n")
 
@@ -390,6 +465,7 @@ def run_eval(cfg: DictConfig) -> None:
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None
     errored = False
+    keyboard_interrupt = None
 
     try:
         post_train_eval(eval_cfg)
@@ -397,7 +473,10 @@ def run_eval(cfg: DictConfig) -> None:
             msg_body = "Success!"
     except BaseException as e:
         if use_discord_webhook:
-            msg_body = "Check the logs for more details."
+            if isinstance(e, KeyboardInterrupt):
+                keyboard_interrupt = True
+            else:
+                msg_body = "Check the logs for more details."
 
         print(traceback.format_exc())
         errored = True
@@ -408,9 +487,10 @@ def run_eval(cfg: DictConfig) -> None:
             webhook_url = cfg["webhook"]["discord_webhook_url"]
             post_to_discord_webhook(
                 webhook_url=webhook_url,
-                experiment_name=eval_cfg["experiment_name"],
+                experiment_name=f"{eval_cfg['experiment_name']} Multirun Eval",
                 message_body=msg_body,
                 errored=errored,
+                keyboard_interrupt=keyboard_interrupt,
             )
 
 

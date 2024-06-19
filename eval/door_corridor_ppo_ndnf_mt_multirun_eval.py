@@ -305,7 +305,22 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     # Check for checkpoints
     # If the thresholding process is done, then we load the threshold candidates
     # Otherwise, we threshold the model and save the threshold candidates
-    if (model_dir / "threshold_val_candidates.json").exists():
+    def apply_threshold_with_candidate_list(t_vals_candidates: list[float]):
+        log.info(f"Applying threshold: {t_vals_candidates[0]}")
+        apply_threshold(
+            model.actor,
+            og_conj_weight,
+            og_disj_weight,
+            t_vals_candidates[0],
+        )
+        torch.save(model.state_dict(), model_dir / "thresholded_model.pth")
+
+    if (model_dir / "thresholded_model.pth").exists():
+        thresholded_state = torch.load(
+            model_dir / "thresholded_model.pth", map_location=DEVICE
+        )
+        model.load_state_dict(thresholded_state)
+    elif (model_dir / "threshold_val_candidates.json").exists():
         with open(model_dir / "threshold_val_candidates.json", "r") as f:
             threshold_json_dict = json.load(f)
             if not threshold_json_dict["threshold_success"]:
@@ -314,6 +329,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
                 )
                 return DoorCorridorFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
             t_vals_candidates = threshold_json_dict["threshold_vals"]
+        apply_threshold_with_candidate_list(t_vals_candidates)
     else:
         ret = threshold_model()
         threshold_json_dict = {}
@@ -326,25 +342,19 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             threshold_json_dict["threshold_success"] = True
             threshold_json_dict["threshold_vals"] = t_vals_candidates
             json.dump(threshold_json_dict, f)
+        apply_threshold_with_candidate_list(t_vals_candidates)
 
-    log.info(f"Applying threshold: {t_vals_candidates[0]}")
-    apply_threshold(
-        model.actor,
-        og_conj_weight,
-        og_disj_weight,
-        t_vals_candidates[0],
-    )
     _simulate_with_print(_ndnf_mt_dis_action_fn, "NDNF MT dis (thresholded)")
 
     log.info("======================================")
 
     # 4. Rule extraction
-    if (model_dir / "asp_rules.txt").exists():
-        with open(model_dir / "asp_rules.txt", "r") as f:
+    if (model_dir / "asp_rules.lp").exists():
+        with open(model_dir / "asp_rules.lp", "r") as f:
             rules = f.readlines()
     else:
         rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
-        with open(model_dir / "asp_rules.txt", "w") as f:
+        with open(model_dir / "asp_rules.lp", "w") as f:
             f.write("\n".join(rules))
     for r in rules:
         log.info(r)

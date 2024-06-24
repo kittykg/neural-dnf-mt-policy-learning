@@ -55,29 +55,25 @@ include_observation_for_encoding(Time, obs(X, Y, O, S), a(I)) :-
 % An image encoding has to have at least one observation needed.
 :- img_encoding_id(I), #count{ X, Y, O, S: include(a(I), obs(X, Y, O, S), Sign) } = 0.
 
+% If an image encoding a(I) is required to fire at time T, but with the mapping
+% it is not fired, then it is a violation.
+:- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), pos),
+    not fired_img_encoding_from_inclusion(T, a(I)).
+
+% If an image encoding a(I) is required to not fire at time T, but with the
+% mapping it is fired, then it is a violation.
+:- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), pos),
+    fired_img_encoding_from_inclusion(T, a(I)).
+
 % ------------------------------------------------------------------------------
 %                               Soft constraint
 % ------------------------------------------------------------------------------
 
 % Soft constraints (optimisation):
-% If an image encoding a(I) is fired at time T, but with the mapping it is not
-% fired, then it is a violation. Penalise at highest level with penalty 2.
-% TODO: This should actually be a hard constraint
-:~ timestamp(T), img_encoding_id(I),
-    fired_img_encoding(T, a(I)), not fired_img_encoding_from_inclusion(T, a(I)). [3@3]
-
-% If an image encoding a(I) is not fired at time T, but with the mapping it is
-% fired, then it is a violation. Penalise at highest level with penalty 2.
-% TODO: This should actually be a hard constraint
-:~ timestamp(T), img_encoding_id(I),
-    fired_img_encoding_from_inclusion(T, a(I)), not fired_img_encoding(T, a(I)). [3@3]
-
 % Reduce the number of mapping needed for an image encoding. Penalise at level 1
 % for penalty 1.
 :~ img_encoding_id(I), is_possible_observation(obs(X, Y, O, S)),
-    include(a(I), obs(X, Y, O, S), _). [2@2]
-
-% TODO: Priorities what is directly in front/left/right of the agent
+    include(a(I), obs(X, Y, O, S), _). [2@1]
 
 % ------------------------------------------------------------------------------
 %                               Helper predicates
@@ -93,8 +89,8 @@ counting(a(I), Count) :-
 %                               Show statements
 % ------------------------------------------------------------------------------
 
-#show fired_img_encoding/2.
-#show fired_img_encoding_from_inclusion/2.
-#show include_observation_for_encoding/3.
+% #show fired_img_encoding/2.
+% #show fired_img_encoding_from_inclusion/2.
+% #show include_observation_for_encoding/3.
 #show include/3.
-#show counting/2.
+% #show counting/2.

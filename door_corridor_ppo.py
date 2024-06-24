@@ -372,6 +372,25 @@ class DCPPONDNFBasedAgent(DCPPOBaseAgent):
 
         return actions.cpu().numpy(), tanh_action.cpu().numpy()
 
+    def get_conjunction_output(
+        self,
+        preprocessed_obs: dict[str, Tensor],
+        discretise_img_encoding: bool = False,
+    ):
+        """
+        Return the conjunction output of the actor (tanh-ed)
+        This function should only be called during evaluation.
+        """
+        assert (
+            not self.training
+        ), "get_actor_output() should only be called during evaluation!"
+
+        with torch.no_grad():
+            embedding = self._get_embedding(preprocessed_obs)
+            if discretise_img_encoding:
+                embedding = torch.sign(embedding)
+            return torch.tanh(self.actor.conjunctions(embedding))
+
     @staticmethod
     def customise_dnf_actor(
         embedding_size: int,

@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 import sys
 import traceback
+from typing import Any
 
 import clingo
 import hydra
@@ -22,6 +23,7 @@ from corridor_grid.envs import DoorCorridorEnv
 from door_corridor_ppo import construct_model, DCPPONDNFBasedAgent
 from utils import post_to_discord_webhook
 
+Atom = tuple[int, bool, str]
 
 log = logging.getLogger()
 
@@ -41,30 +43,87 @@ def get_relevant_image_encoding_from_rules(asp_rules: str):
     )
 
 
+def get_disjunction_map(sd: dict[str, Any]) -> dict[str, dict[int, list[Atom]]]:
+    conjunction_map: dict[int, list[Atom]] = dict()
+    disjunction_map: dict[int, list[Atom]] = dict()
+
+    conj_w = sd["conjunctions.weights"]
+    for i, w in enumerate(conj_w):
+        if torch.all(w == 0):
+            # No conjunction is applied here
+            continue
+
+        conjuncts: list[Atom] = []
+        for j, v in enumerate(w):
+            if v < 0:
+                # Negative weight, negate the atom
+                conjuncts.append((j, False, "input"))
+            elif v > 0:
+                # Positive weight, normal atom
+                conjuncts.append((j, True, "input"))
+
+        conjunction_map[i] = conjuncts
+
+    disj_w = sd["disjunctions.weights"]
+    for i, w in enumerate(disj_w):
+        if torch.all(w == 0):
+            # No DNF for class i
+            # This should not happen
+            continue
+
+        disjuncts: list[Atom] = []
+        for j, v in enumerate(w):
+            if v < 0 and j in conjunction_map:
+                # Negative weight, negate the existing conjunction
+                disjuncts.append((j, False, "conjunction"))
+            elif v > 0 and j in conjunction_map:
+                # Postivie weight, add normal conjunction
+                disjuncts.append((j, True, "conjunction"))
+
+        disjunction_map[i] = disjuncts
+
+    return {
+        "conjunction_map": conjunction_map,
+        "disjunction_map": disjunction_map,
+    }
+
+
 def get_raw_context(
     model: DCPPONDNFBasedAgent, asp_rules: str
-) -> dict[str, list] | None:
+) -> dict[str, Any] | None:
     obs, _ = single_env.reset()
+
+    ret = get_disjunction_map(model.actor.state_dict())
+    conjunction_map = ret["conjunction_map"]
+    disjunction_map = ret["disjunction_map"]
 
     terminated = False
     truncated = False
-    reward_sum = 0
 
     all_raw_obs = []
     all_img_encoding = []
+    required_img_encoding_at_time: dict[
+        int, tuple[bool, list[tuple[int, bool]]]
+    ] = dict()
 
+    time = 0
     while not terminated and not truncated:
         raw_obs = obs["image"]
         all_raw_obs.append(raw_obs)
 
         with torch.no_grad():
+            preprocessed_obs = {
+                "image": torch.tensor(raw_obs.copy(), device=DEVICE)
+                .unsqueeze(0)
+                .float()
+            }
             raw_img_encoding = model.get_img_encoding(
-                preprocessed_obs={
-                    "image": torch.tensor(raw_obs.copy(), device=DEVICE)
-                    .unsqueeze(0)
-                    .float()
-                }
+                preprocessed_obs=preprocessed_obs
             ).squeeze(0)
+            conjunctions_output = model.get_conjunction_output(
+                preprocessed_obs=preprocessed_obs
+            ).squeeze(0)
+
         img_encoding = torch.nonzero(raw_img_encoding > 0)
         img_encoding_asp = [f"a_{a.item()}." for a in img_encoding]
         all_img_encoding.append(img_encoding)
@@ -74,7 +133,7 @@ def get_raw_context(
             f"#show disj_{i}/0."
             for i in range(DoorCorridorEnv.get_num_actions())
         ]
-        # print(img_encoding_asp + show_statements + asp_rules.split("\n"))
+
         ctl.add(
             "base",
             [],
@@ -108,10 +167,49 @@ def get_raw_context(
 
         action = list(output_classes_set)[0]
 
-        obs, reward, terminated, truncated, _ = single_env.step(action)
-        reward_sum += reward
+        # Compute the required image encoding at this time
+        # Because the mutual exclusivity nature, there should be only one
+        # disjunction fired at a time. So only one conjunction that is used by
+        # this disjunction is fired at a time.
+        # We need to find the image encoding that triggers conjunction (pos or
+        # neg)
+        required_encoding = []
+        for c in disjunction_map[action]:
+            # c is type of Atom i.e. (int, bool, str)
+            c_id, c_sign, _ = c
 
-    return {"all_raw_obs": all_raw_obs, "all_img_encoding": all_img_encoding}
+            # If the action uses multiple conjunction, check if this is the
+            # conjunction that is fired
+            if (conjunctions_output[c_id] > 0) != c_sign:
+                # This conjunction is not fired
+                continue
+
+            # This conjunction is fired
+            # Check the literals in the conjunction
+            if c_sign:
+                # Positive conjunction used in the rule
+                # So all literals required for this conjunction has to be true
+                for a in conjunction_map[c_id]:
+                    a_id, a_sign, _ = a
+                    required_encoding.append((a_id, a_sign))
+                required_img_encoding_at_time[time] = (True, required_encoding)
+
+            else:
+                # Negative conjunction used in the rule
+                # Either literal is false or not present in the rule is enough
+                for a in conjunction_map[c_id]:
+                    a_id, a_sign, _ = a
+                    required_encoding.append((a_id, not a_sign))
+                required_img_encoding_at_time[time] = (False, required_encoding)
+
+        obs, _, terminated, truncated, _ = single_env.step(action)
+        time += 1
+
+    return {
+        "all_raw_obs": all_raw_obs,
+        "all_img_encoding": all_img_encoding,
+        "required_img_encoding_at_time": required_img_encoding_at_time,
+    }
 
 
 def generate_context(
@@ -129,6 +227,9 @@ def generate_context(
 
     all_raw_obs = raw_context_dict["all_raw_obs"]
     all_img_encoding = raw_context_dict["all_img_encoding"]
+    required_img_encoding_at_time = raw_context_dict[
+        "required_img_encoding_at_time"
+    ]
     total_time = len(all_img_encoding)
 
     asp_context.append(f"timestamp(0..{total_time - 1}).")
@@ -145,24 +246,50 @@ def generate_context(
     for obs in obs_lp:
         asp_context.append(f"is_possible_observation({obs}).")
 
+    # Choice rule
     for i in relevant_encoding_ids:
         asp_context.append(
             f"{{ include(a({i}), ({';'.join(obs_lp)}), (pos;neg)) }} 1."
         )
 
+    # The context at each time step
     for time, raw_obs in enumerate(all_raw_obs):
         img_encoding = all_img_encoding[time]
+        # What img encodings are fired at this time
         for a in img_encoding:
             if a.item() in relevant_encoding_ids:
                 asp_context.append(
                     f"fired_img_encoding({time}, a({a.item()}))."
                 )
 
+        # What observations are fired at this time
         for x in range(3):
             for y in range(3):
                 asp_context.append(
                     f"fired_observation({time}, obs({x}, {y}, {raw_obs[x, y, 0]}, {raw_obs[x, y, 1]}))."
                 )
+
+        # What img encodings are required at this time
+        required_encoding: tuple[bool, list[tuple[int, bool]]] = (
+            required_img_encoding_at_time[time]
+        )
+        if required_encoding[0]:
+            # All these image encodings are required
+            for a, sign in required_encoding[1]:
+                sign_str = "pos" if sign else "neg"
+                asp_context.append(
+                    f"required_img_encoding({time}, a({a}), {sign_str})."
+                )
+        else:
+            # At least one of these image encodings are required
+            for a, sign in required_encoding[1]:
+                # We check which one matches the encoding at this time
+                # We add those that matches the current encoding set
+                if a in img_encoding and sign:
+                    sign_str = "pos" if sign else "neg"
+                    asp_context.append(
+                        f"required_img_encoding({time}, a({a}), {sign_str})."
+                    )
 
     return asp_context
 

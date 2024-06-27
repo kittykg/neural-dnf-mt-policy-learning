@@ -49,21 +49,33 @@ include_observation_for_encoding(Time, obs(X, Y, O, S), a(I)) :-
 
 % For a given observation, it can't be both positively/negatively mapped to
 % two different image encodings.
-% :- img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
-%     include(a(I), obs(X, Y, O, S), Sign), include(a(J), obs(X, Y, O, S), Sign), I != J.
+:- img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
+    include(a(I), obs(X, Y, O, S), Sign), include(a(J), obs(X, Y, O, S), Sign), I != J.
 
 % An image encoding has to have at least one observation needed.
 :- img_encoding_id(I), #count{ X, Y, O, S: include(a(I), obs(X, Y, O, S), Sign) } = 0.
 
+% :- timestamp(T), img_encoding_id(I), fired_img_encoding(T, a(I)),
+%     not fired_img_encoding_from_inclusion(T, a(I)).
+
+% :- timestamp(T), img_encoding_id(I), not fired_img_encoding(T, a(I)),
+%     fired_img_encoding_from_inclusion(T, a(I)).
+
 % If an image encoding a(I) is required to fire at time T, but with the mapping
 % it is not fired, then it is a violation.
-:- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), pos),
-    not fired_img_encoding_from_inclusion(T, a(I)).
+% :- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), pos),
+%     not fired_img_encoding_from_inclusion(T, a(I)).
 
 % If an image encoding a(I) is required to not fire at time T, but with the
 % mapping it is fired, then it is a violation.
-:- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), pos),
-    fired_img_encoding_from_inclusion(T, a(I)).
+% :- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), pos),
+%     fired_img_encoding_from_inclusion(T, a(I)).
+
+% :- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), neg),
+%     fired_img_encoding_from_inclusion(T, a(I)).
+
+% :- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), neg),
+%     not fired_img_encoding_from_inclusion(T, a(I)).
 
 % ------------------------------------------------------------------------------
 %                               Soft constraint
@@ -73,7 +85,20 @@ include_observation_for_encoding(Time, obs(X, Y, O, S), a(I)) :-
 % Reduce the number of mapping needed for an image encoding. Penalise at level 1
 % for penalty 1.
 :~ img_encoding_id(I), is_possible_observation(obs(X, Y, O, S)),
-    include(a(I), obs(X, Y, O, S), _). [2@1]
+    include(a(I), obs(X, Y, O, S), _). [1@3]
+
+:~ img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
+    include(a(I), obs(X, Y, O, S), pos), include(a(J), obs(X, Y, O, S), neg), I != J. [1@2]
+
+% TODO: Priorities what is directly in front/left/right of the agent
+% Penalise the others at lowest level with penalty 1.
+:~ include(a(_), obs(0, 0, _, _), _). [1@1]
+:~ include(a(_), obs(0, 2, _, _), _). [1@1]
+:~ include(a(_), obs(1, 0, _, _), _). [1@1]
+:~ include(a(_), obs(1, 2, _, _), _). [1@1]
+:~ include(a(_), obs(_, _, 2, _), _). [1@1]
+:~ include(a(_), obs(2, 1, _, _), _). [1@1]
+:~ include(a(_), obs(_, _, _, _), neg). [1@1]
 
 % ------------------------------------------------------------------------------
 %                               Helper predicates
@@ -93,4 +118,3 @@ counting(a(I), Count) :-
 % #show fired_img_encoding_from_inclusion/2.
 % #show include_observation_for_encoding/3.
 #show include/3.
-% #show counting/2.

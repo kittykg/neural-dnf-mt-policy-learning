@@ -276,20 +276,28 @@ def generate_context(
         if required_encoding[0]:
             # All these image encodings are required
             for a, sign in required_encoding[1]:
-                sign_str = "pos" if sign else "neg"
-                asp_context.append(
-                    f"required_img_encoding({time}, a({a}), {sign_str})."
-                )
+                if sign:
+                    asp_context.append(
+                        f":- not fired_img_encoding_from_inclusion({time}, a({a}))."
+                    )
+                else:
+                    asp_context.append(
+                        f":- fired_img_encoding_from_inclusion({time}, a({a}))."
+                    )
         else:
             # At least one of these image encodings are required
+            constraints = []
             for a, sign in required_encoding[1]:
                 # We check which one matches the encoding at this time
                 # We add those that matches the current encoding set
-                if a in img_encoding and sign:
-                    sign_str = "pos" if sign else "neg"
-                    asp_context.append(
-                        f"required_img_encoding({time}, a({a}), {sign_str})."
-                    )
+                constraint_body_str = (
+                    f"fired_img_encoding_from_inclusion({time}, a({a}))"
+                )
+                if sign:
+                    constraint_body_str = f"not {constraint_body_str}"
+                constraints.append(constraint_body_str)
+
+            asp_context.append(f":- {', '.join(constraints)}.")
 
     return asp_context
 

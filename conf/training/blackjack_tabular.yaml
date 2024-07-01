@@ -1,0 +1,17 @@
+experiment_name: blackjack_tab_3e6
+
+seed: null
+
+gamma: 0.95
+alpha: 0.001
+
+eps_start: 1.0
+eps_end: 0.1
+eps_decay: 50000
+
+num_episodes: 3e6
+
+use_sarsa: False
+
+logging_freq: 10000
+save_freq: 1000000

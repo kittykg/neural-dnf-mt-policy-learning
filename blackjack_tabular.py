@@ -240,10 +240,14 @@ def train(
     log.info(df)
 
     if plot_policy:
-        plot_policy_grid_after_train(Path(table_name), full_experiment_name)
+        plot_policy_grid_after_train(
+            Path(table_name), full_experiment_name, use_wandb
+        )
 
 
-def plot_policy_grid_after_train(csv_path: Path, model_name: str):
+def plot_policy_grid_after_train(
+    csv_path: Path, model_name: str, use_wandb: bool
+):
     target_policy = get_target_policy(csv_path)
     plot = create_target_policy_plots(
         target_policy,
@@ -251,6 +255,12 @@ def plot_policy_grid_after_train(csv_path: Path, model_name: str):
         argmax=True,
     )
     plot.savefig(f"{model_name}_argmax_policy.png")
+
+    if use_wandb:
+        wandb.log(
+            {"argmax_policy": wandb.Image(f"{model_name}_argmax_policy.png")}
+        )
+
     plt.close()
     plot = create_target_policy_plots(
         target_policy,
@@ -258,6 +268,10 @@ def plot_policy_grid_after_train(csv_path: Path, model_name: str):
         argmax=False,
     )
     plot.savefig(f"{model_name}_soft_policy.png")
+
+    if use_wandb:
+        wandb.log({"soft_policy": wandb.Image(f"{model_name}_soft_policy.png")})
+
     plt.close()
 
 
@@ -265,7 +279,18 @@ def plot_policy_grid_after_train(csv_path: Path, model_name: str):
 def run_experiment(cfg: DictConfig) -> None:
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
-    full_experiment_name = training_cfg["experiment_name"] + f"_{seed}"
+
+    if seed is None:
+        seed = random.randint(0, 1000000)
+
+    # Expect the experiment name to be in the format of
+    # blackjack_tab_..._..._..._...
+    name_list = training_cfg["experiment_name"].split("_")
+    # Insert "sarsa" or "q" after "tab"
+    name_list.insert(2, "sarsa" if training_cfg["use_sarsa"] else "q")
+    # Add the seed at the end of the name list
+    name_list.append(str(seed))
+    full_experiment_name = "_".join(name_list)
 
     log.info(f"Experiment {full_experiment_name} started.")
 
@@ -291,6 +316,7 @@ def run_experiment(cfg: DictConfig) -> None:
             dir=HydraConfig.get().run.dir,
             name=run_dir_name,
             tags=cfg["wandb"]["tags"] if "tags" in cfg["wandb"] else [],
+            group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
     env: BlackjackEnv = gym.make("Blackjack-v1", render_mode="rgb_array")  # type: ignore

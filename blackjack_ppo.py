@@ -606,7 +606,7 @@ def plot_policy_grid_after_train(
 ) -> None:
     target_policy = get_target_policy(target_policy_csv_path)
     action_distribution = get_agent_policy(agent, target_policy, device)
-    plot = create_policy_plots(
+    plot = create_policy_plots_from_action_distribution(
         target_policy,
         action_distribution,
         model_name,
@@ -624,7 +624,7 @@ def plot_policy_grid_after_train(
         )
     plt.close()
 
-    plot = create_policy_plots(
+    plot = create_policy_plots_from_action_distribution(
         target_policy,
         action_distribution,
         model_name,

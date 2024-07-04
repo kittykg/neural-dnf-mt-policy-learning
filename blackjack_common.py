@@ -147,72 +147,18 @@ def _create_model_grids(
     return _create_grid(model_policy)
 
 
-def create_target_policy_plots(
-    target_policy: TargetPolicyType, model_name: str, argmax: bool = True
-) -> Figure:
-    target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
-    fig = plt.figure(figsize=figaspect(0.4))
-    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
-    fig.suptitle(f"{policy_type} for Q-table policy {model_name}", fontsize=14)
-
-    # Plot the policy with usable ace
-    fig.add_subplot(1, 2, 1)
-    ax1 = sns.heatmap(
-        target_policy_ace,
-        linewidth=0,
-        annot=True,
-        cmap="Accent_r",
-        cbar=False,
-        fmt=".2f" if not argmax else "d",
-    )
-    ax1.set_title("Policy with usable ace")
-    ax1.set_xlabel("Player sum")
-    ax1.set_ylabel("Dealer showing")
-    ax1.set_xticklabels(range(12, 22))  # type: ignore
-    ax1.set_yticklabels(["A"] + list(range(2, 11)), fontsize=12)  # type: ignore
-
-    fig.add_subplot(1, 2, 2)
-    ax2 = sns.heatmap(
-        target_policy_no_ace,
-        linewidth=0,
-        annot=True,
-        cmap="Accent_r",
-        cbar=False,
-        fmt=".2f" if not argmax else "d",
-    )
-    ax2.set_title("Policy without usable ace")
-    ax2.set_xlabel("Player sum")
-    ax2.set_ylabel("Dealer showing")
-    ax2.set_xticklabels(range(12, 22))  # type: ignore
-    ax2.set_yticklabels(["A"] + list(range(2, 11)), fontsize=12)  # type: ignore
-
-    # add a legend
-    if argmax:
-        legend_elements = [
-            Patch(facecolor="lightgreen", edgecolor="black", label="Hit"),
-            Patch(facecolor="grey", edgecolor="black", label="Stick"),
-        ]
-        ax2.legend(handles=legend_elements, bbox_to_anchor=(1.3, 1))
-    return fig
-
-
-def create_policy_plots(
-    target_policy: TargetPolicyType,
-    model_action_distribution: Any,
-    model_name: str,
+def _generate_policy_with_diff_support(
+    policy_ace: np.ndarray,
+    policy_no_ace: np.ndarray,
+    target_policy_ace: np.ndarray | None = None,
+    target_policy_no_ace: np.ndarray | None = None,
+    suptitle: str | None = None,
     argmax: bool = True,
     plot_diff: bool = False,
-) -> Figure:
-    """
-    model_action_distribution: should be `.prob` output of a distribution
-    """
-    policy_ace, policy_no_ace = _create_model_grids(
-        target_policy, model_action_distribution, argmax=argmax
-    )
-    target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
+):
     fig = plt.figure(figsize=figaspect(0.4))
-    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
-    fig.suptitle(f"{policy_type} for {model_name}", fontsize=14)
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=14)
 
     # Plot the policy with usable ace
     fig.add_subplot(1, 2, 1)
@@ -225,6 +171,7 @@ def create_policy_plots(
         fmt=".2f" if not argmax else "d",
     )
     if argmax and plot_diff:
+        assert target_policy_ace is not None
         ax1 = sns.heatmap(
             policy_ace,
             mask=target_policy_ace == policy_ace,
@@ -248,6 +195,7 @@ def create_policy_plots(
         fmt=".2f" if not argmax else "d",
     )
     if argmax and plot_diff:
+        assert target_policy_no_ace is not None
         ax2 = sns.heatmap(
             policy_no_ace,
             mask=policy_no_ace == target_policy_no_ace,
@@ -268,4 +216,65 @@ def create_policy_plots(
             Patch(facecolor="grey", edgecolor="black", label="Stick"),
         ]
         ax2.legend(handles=legend_elements, bbox_to_anchor=(1.3, 1))
+
     return fig
+
+
+def create_target_policy_plots(
+    target_policy: TargetPolicyType, model_name: str, argmax: bool = True
+) -> Figure:
+    target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
+    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
+    return _generate_policy_with_diff_support(
+        policy_ace=target_policy_ace,
+        policy_no_ace=target_policy_no_ace,
+        suptitle=f"{policy_type} for {model_name}",
+        argmax=argmax,
+    )
+
+
+def create_policy_plots_from_action_distribution(
+    target_policy: TargetPolicyType,
+    model_action_distribution: Any,
+    model_name: str,
+    argmax: bool = True,
+    plot_diff: bool = False,
+) -> Figure:
+    """
+    model_action_distribution: should be `.prob` output of a distribution
+    """
+    policy_ace, policy_no_ace = _create_model_grids(
+        target_policy, model_action_distribution, argmax=argmax
+    )
+    target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
+    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
+    return _generate_policy_with_diff_support(
+        policy_ace=policy_ace,
+        policy_no_ace=policy_no_ace,
+        target_policy_ace=target_policy_ace,
+        target_policy_no_ace=target_policy_no_ace,
+        suptitle=f"{policy_type} for {model_name}",
+        argmax=argmax,
+        plot_diff=plot_diff,
+    )
+
+
+def create_policy_plots_from_asp(
+    target_policy: TargetPolicyType,
+    asp_policy: TargetPolicyType,
+    model_name: str,
+    argmax: bool = True,
+    plot_diff: bool = False,
+):
+    target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
+    asp_policy_ace, asp_policy_no_ace = _create_grid(asp_policy)
+    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
+    return _generate_policy_with_diff_support(
+        policy_ace=asp_policy_ace,
+        policy_no_ace=asp_policy_no_ace,
+        target_policy_ace=target_policy_ace,
+        target_policy_no_ace=target_policy_no_ace,
+        suptitle=f"{policy_type} for {model_name}",
+        argmax=argmax,
+        plot_diff=plot_diff,
+    )

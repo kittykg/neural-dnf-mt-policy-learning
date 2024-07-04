@@ -1,4 +1,3 @@
-from collections import OrderedDict, defaultdict
 from pathlib import Path
 import random
 import time
@@ -12,14 +11,10 @@ from gymnasium.wrappers.record_video import RecordVideo
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 import hydra
 from hydra.core.hydra_config import HydraConfig
-from matplotlib.figure import figaspect
-from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
-import pandas as pd
-import seaborn as sns
 import torch
 from torch import Tensor, nn, optim
 from torch.distributions.categorical import Categorical
@@ -36,7 +31,7 @@ from common import init_params
 from utils import post_to_discord_webhook
 
 
-PPO_MODEL_DIR = Path(__file__).parent / "ssc_ppo_storage/"
+PPO_MODEL_DIR = Path(__file__).parent / "blackjack_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -410,6 +405,9 @@ class BlackjackPPONDNFMutexTanhAgent(BlackjackPPONDNFBasedAgent):
     def get_action_distribution(
         self, preprocessed_obs: dict[str, Tensor]
     ) -> Categorical:
+        """
+        Return the action distribution based on the observation.
+        """
         x = preprocessed_obs[self.input_key]
         logits = self.actor(x)
         return Categorical(probs=(logits + 1) / 2)
@@ -534,9 +532,52 @@ def get_agent_policy(
     return action_dist.probs.cpu().numpy()  # type: ignore
 
 
+def plot_policy_grid_after_train(
+    target_policy_csv_path: Path,
+    agent: BlackjackPPOBaseAgent,
+    device: torch.device,
+    model_name: str,
+    use_wandb: bool,
+):
+    target_policy = get_target_policy(target_policy_csv_path)
+    action_distribution = get_agent_policy(agent, target_policy, device)
+    plot = create_policy_plots(
+        target_policy,
+        action_distribution,
+        model_name,
+        argmax=True,
+        plot_diff=True,
+    )
+    plot.savefig(f"{model_name}_argmax_policy_cmp_q.png")
+    if use_wandb:
+        wandb.log(
+            {
+                "argmax_policy": wandb.Image(
+                    f"{model_name}_argmax_policy_cmp_q.png"
+                )
+            }
+        )
+    plt.close()
+
+    plot = create_policy_plots(
+        target_policy,
+        action_distribution,
+        model_name,
+        argmax=False,
+        plot_diff=True,
+    )
+    plot.savefig(f"{model_name}_soft_policy_cmp_q.png")
+    if use_wandb:
+        wandb.log(
+            {"soft_policy": wandb.Image(f"{model_name}_soft_policy_cmp_q.png")}
+        )
+    plt.close()
+
+
 def train_ppo(
     training_cfg: DictConfig,
     full_experiment_name: str,
+    use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
 ) -> tuple[Path | None, BlackjackPPOBaseAgent]:
@@ -572,7 +613,6 @@ def train_ppo(
     ), "only discrete action space is supported"
 
     # Set up the model
-    single_env = construct_single_environment()
     agent = construct_model(
         num_latent=training_cfg["model_latent_size"],
         use_ndnf=use_ndnf,
@@ -722,7 +762,7 @@ def train_ppo(
                 mb_inds = b_inds[start:end]
 
                 _, new_log_prob, entropy, new_val = agent.get_action_and_value(
-                    {"input": b_obs[mb_inds]}, b_actions.long()[mb_inds]
+                    {agent.input_key: b_obs[mb_inds]}, b_actions.long()[mb_inds]
                 )
                 log_ratio = new_log_prob - b_log_probs[mb_inds]
                 ratio = log_ratio.exp()
@@ -793,12 +833,6 @@ def train_ppo(
                     loss += l_tanh_conj_lambda * l_tanh_conj
 
                     if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
-                        l_tanh_conj_lambda = training_cfg["aux_loss"][
-                            "tanh_conj_lambda"
-                        ]
-                        l_tanh_conj = aux_loss_dict["l_tanh_conj"]
-                        loss += l_tanh_conj_lambda * l_tanh_conj
-
                         l_mt_ce2_lambda = training_cfg["aux_loss"][
                             "mt_ce2_lambda"
                         ]
@@ -871,14 +905,20 @@ def train_ppo(
             global_step,
         )
 
-        # If training SSCPPONeuralDNFMutexTanhAgent, plot y_k, hat_y_k
-        # if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
-        #     ret = plot_y_k_hat_y_k(agent, single_env, use_state_no_as_obs)
-        #     for key, value in ret.items():
-        #         writer.add_scalar(f"mt/{key}", value, global_step)
-
     envs.close()
     writer.close()
+
+    if "plot_policy" in training_cfg and training_cfg["plot_policy"]:
+        assert "target_policy_csv_path" in training_cfg
+        assert training_cfg["target_policy_csv_path"] is not None
+
+        plot_policy_grid_after_train(
+            training_cfg["target_policy_csv_path"],
+            agent,
+            device,
+            full_experiment_name,
+            use_wandb,
+        )
 
     if save_model:
         model_dir = PPO_MODEL_DIR / full_experiment_name
@@ -896,25 +936,20 @@ def run_experiment(cfg: DictConfig) -> None:
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
 
-    # Expect the experiment name to be in the format of
-    # {corridor env name}_ppo_{model type}_...
-    name_list = training_cfg["experiment_name"].split("_")
-    # Insert "sn"/"ws" between corridor env name and ppo to indicate whether the
-    # environment is POMDP or MDP
-    name_list.insert(1, "sn" if training_cfg["use_state_no_as_obs"] else "ws")
-    # Add seed at the end of the name list
-    name_list.append(str(seed))
-    full_experiment_name = "_".join(name_list)
+    full_experiment_name = f"{training_cfg['experiment_name']}_{seed}"
 
     # Set random seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    # For wandb and output dir name, capitalise the first 3 words:
-    # corridor env name, sn/ws, ppo
+    # For wandb and output dir name, capitalise the first 2 words:
+    # 'blackjack' and 'ppo'
     run_dir_name = "-".join(
-        [(s.upper() if i in [0, 1, 2] else s) for i, s in enumerate(name_list)]
+        [
+            (s.upper() if i in [0, 1] else s)
+            for i, s in enumerate(full_experiment_name.split("_"))
+        ]
     )
 
     use_wandb = cfg["wandb"]["use_wandb"]
@@ -957,7 +992,9 @@ def run_experiment(cfg: DictConfig) -> None:
     keyboard_interrupt = None
 
     try:
-        model_path, _ = train_ppo(training_cfg, full_experiment_name, writer)
+        model_path, _ = train_ppo(
+            training_cfg, full_experiment_name, use_wandb, writer
+        )
         assert model_path is not None
         if use_wandb:
             wandb.save(glob_str=str(model_path.absolute()))

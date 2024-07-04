@@ -35,6 +35,8 @@ PPO_MODEL_DIR = Path(__file__).parent / "blackjack_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+DEFAULT_TARGET_STATE = (16, 5, 1)
+
 
 class BlackjackPPOBaseAgent(nn.Module):
     """
@@ -185,6 +187,12 @@ class BlackjackPPONDNFBasedAgent(BlackjackPPOBaseAgent):
     """
 
     actor: BaseNeuralDNF
+
+    def __init__(self, num_latent: int, use_decode_obs: bool) -> None:
+        assert (
+            use_decode_obs
+        ), "Only decoded observation is supported for NDNF-based agent for now."
+        super().__init__(num_latent, use_decode_obs)
 
     def _create_default_actor(self) -> nn.Module:
         # This method should be overridden by the subclass
@@ -488,19 +496,28 @@ def make_env(seed: int, idx: int, capture_video: bool):
 
 def blackjack_env_preprocess_obss(
     obs_tuple: tuple[npt.NDArray],
+    use_ndnf: bool,
     device: torch.device,
     normalise: bool = False,
 ) -> dict[str, Tensor]:
     tuple_array = np.stack(obs_tuple, axis=1)
 
+    input_np_arr = np.stack([non_decode_obs(t, normalise) for t in tuple_array])
+    decode_input_nd_array = np.stack([decode_tuple_obs(t) for t in tuple_array])
+
+    if use_ndnf:
+        decode_input_nd_array = np.where(
+            decode_input_nd_array == 0, -1, decode_input_nd_array
+        )
+
     return {
         "input": torch.tensor(
-            np.stack([non_decode_obs(t, normalise) for t in tuple_array]),
+            input_np_arr,
             dtype=torch.float32,
             device=device,
         ),
         "decode_input": torch.tensor(
-            np.stack([decode_tuple_obs(t) for t in tuple_array]),
+            decode_input_nd_array,
             dtype=torch.float32,
             device=device,
         ),
@@ -513,15 +530,31 @@ def get_agent_policy(
     device: torch.device,
     normalise: bool = False,
 ) -> Any:
+    """
+    Return the action distribution for the agent at all states presented in
+    `target_q_policy`.
+    """
     obs_tuple_list = target_q_policy.keys()
+    input_np_arr = np.stack(
+        [non_decode_obs(t, normalise) for t in obs_tuple_list]
+    )
+    decode_input_nd_array = np.stack(
+        [decode_tuple_obs(t) for t in obs_tuple_list]
+    )
+
+    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        decode_input_nd_array = np.where(
+            decode_input_nd_array == 0, -1, decode_input_nd_array
+        )
+
     obs_dict = {
         "input": torch.tensor(
-            np.stack([non_decode_obs(t, normalise) for t in obs_tuple_list]),
+            input_np_arr,
             dtype=torch.float32,
             device=device,
         ),
         "decode_input": torch.tensor(
-            np.stack([decode_tuple_obs(t) for t in obs_tuple_list]),
+            decode_input_nd_array,
             dtype=torch.float32,
             device=device,
         ),
@@ -532,13 +565,47 @@ def get_agent_policy(
     return action_dist.probs.cpu().numpy()  # type: ignore
 
 
+def track_action_distribution(
+    agent: BlackjackPPOBaseAgent,
+    device: torch.device,
+    target_state: tuple[int, int, int] = DEFAULT_TARGET_STATE,
+) -> float:
+    """
+    Return the probability of HIT at `target_state` for the agent.
+    """
+    input_np_arr = np.array([list(target_state)])
+    decode_input_nd_array = np.stack([decode_tuple_obs(target_state)])
+
+    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        decode_input_nd_array = np.where(
+            decode_input_nd_array == 0, -1, decode_input_nd_array
+        )
+
+    obs_dict = {
+        "input": torch.tensor(
+            input_np_arr,
+            dtype=torch.float32,
+            device=device,
+        ),
+        "decode_input": torch.tensor(
+            decode_input_nd_array,
+            dtype=torch.float32,
+            device=device,
+        ),
+    }
+    with torch.no_grad():
+        action_dist = agent.get_action_distribution(obs_dict)
+
+    return action_dist.probs.cpu().numpy()[0, 1]  # type: ignore
+
+
 def plot_policy_grid_after_train(
     target_policy_csv_path: Path,
     agent: BlackjackPPOBaseAgent,
     device: torch.device,
     model_name: str,
     use_wandb: bool,
-):
+) -> None:
     target_policy = get_target_policy(target_policy_csv_path)
     action_distribution = get_agent_policy(agent, target_policy, device)
     plot = create_policy_plots(
@@ -649,7 +716,7 @@ def train_ppo(
     global_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset()
-    next_obs_dict = blackjack_env_preprocess_obss(next_obs, device)
+    next_obs_dict = blackjack_env_preprocess_obss(next_obs, use_ndnf, device)
     next_done = torch.zeros(num_envs).to(device)
 
     last_episodic_return = None
@@ -692,7 +759,9 @@ def train_ppo(
             )
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).float().to(device).view(-1)
-            next_obs_dict = blackjack_env_preprocess_obss(next_obs, device)
+            next_obs_dict = blackjack_env_preprocess_obss(
+                next_obs, use_ndnf, device
+            )
             next_done = torch.Tensor(next_done).to(device)
 
             if "final_info" in infos:
@@ -898,7 +967,12 @@ def train_ppo(
                     f"old delta={old_delta:.3f} new delta={new_delta:.3f}\t"
                     f"last episodic_return={last_episodic_return}"
                 )  # type: ignore
-
+            
+        writer.add_scalar(
+            f"charts/action_hit_prob_at_{DEFAULT_TARGET_STATE}",
+            track_action_distribution(agent, device),
+            global_step,
+        )
         writer.add_scalar(
             "charts/SPS",
             int(global_step / (time.time() - start_time)),

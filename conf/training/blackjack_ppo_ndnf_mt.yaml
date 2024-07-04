@@ -16,9 +16,9 @@ plot_policy: True
 target_policy_csv_path: ??? # to be filled in
 
 aux_loss:
-  dis_l1_mod_lambda: 1e-3
+  dis_l1_mod_lambda: 1e-6
   tanh_conj_lambda: 0
-  mt_ce2_lambda: 0.1
+  mt_ce2_lambda: 1e-3
 
 
 dds:

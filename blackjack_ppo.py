@@ -39,9 +39,8 @@ if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
 class BlackjackPPOBaseAgent(nn.Module):
     """
     To create a base agent, pass in the following parameters:
-    - num_inputs (int): the number of input features
     - num_latent (int): the number of latent features
-    - action_size (int): the number of actions the agent can take
+    - use_decode_obs (bool): flag to use decode observation
 
     The actor and critic networks are created using `_create_default_actor()`
     and `_create_default_critic()` methods respectively.
@@ -170,11 +169,10 @@ class BlackjackPPOBaseAgent(nn.Module):
 
 class BlackjackPPOMLPAgent(BlackjackPPOBaseAgent):
     """
-    An agent for door corridor environment, with a 2-layer MLP actor.
-    To create a `SSCPPOMLP` agent, pass in the following parameters:
-    - num_inputs (int): the number of input features
+    An agent for gymnasium Blackjack environment, with a 2-layer MLP actor.
+    To create a `BlackjackPPOMLP` agent, pass in the following parameters:
     - num_latent (int): the number of latent features
-    - action_size (int): the number of actions the agent can take
+    - use_decode_obs (bool): flag to use decode observation
 
     The actor and critic networks are created using `_create_default_actor()`
     and `_create_default_critic()` methods respectively.
@@ -262,16 +260,16 @@ class BlackjackPPONDNFBasedAgent(BlackjackPPOBaseAgent):
 
 class BlackjackPPONDNFAgent(BlackjackPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNF` as actor.
+    An agent for gymnasium Blackjack environment, with `NeuralDNF` as actor.
     This agent is not usually expected to use for training, but if treating the
     2 actions as binary classification (go left; not go left which is go right),
     it can be used for training. This agent is more expected to be used as a
-    post-training evaluation agent from either a trained `SSCPPONDNFEOAgent` or
-    `SSCPPONDNFMutexTanhAgent`.
-    To create a `SSCPPONDNFEOAgent` agent, pass in the following parameters:
-    - num_inputs (int): the number of input features
+    post-training evaluation agent from either a trained
+    `BlackjackPPONDNFEOAgent` or `BlackjackPPONDNFMutexTanhAgent`.
+    To create a `BlackjackPPONDNFAgent` agent, pass in the following
+    parameters:
     - num_latent (int): the number of conjunctions allowed in NDNF-EO
-    - action_size (int): the number of actions the agent can take
+    - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNF
@@ -284,13 +282,13 @@ class BlackjackPPONDNFAgent(BlackjackPPONDNFBasedAgent):
 
 class BlackjackPPONDNFEOAgent(BlackjackPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNFEO` actor.
-    This agent is used for training, and to be converted to a `SSCPPONDNFAgent`
-    for post-training evaluation.
-    To create a `SSCPPONDNFEOAgent` agent, pass in the following parameters:
-    - num_inputs (int): the number of input features
+    An agent for gymnasium Blackjack environment, with `NeuralDNFEO` actor.
+    This agent is used for training, and to be converted to a
+    `BlackjackPPONDNFAgent` for post-training evaluation.
+    To create a `BlackjackPPONDNFEOAgent` agent, pass in the following
+    parameters:
     - num_latent (int): the number of conjunctions allowed in NDNF-EO
-    - action_size (int): the number of actions the agent can take
+    - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNFEO
@@ -311,13 +309,15 @@ class BlackjackPPONDNFEOAgent(BlackjackPPONDNFBasedAgent):
 
 class BlackjackPPONDNFMutexTanhAgent(BlackjackPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNFMutexTanh` actor.
-    This agent is used for training. It can be converted to a `SSCPPONDNFAgent`
-    for post-training evaluation, or used directly for evaluation.
-    To create a `SSCPPONDNFMutexTanhAgent` agent, pass in the following parameters:
-    - num_inputs (int): the number of input features
+    An agent for gymnasium Blackjack environment, with `NeuralDNFMutexTanh`
+    actor.
+    This agent is used for training. It can be converted to a
+    `BlackjackPPONDNFAgent` for post-training evaluation, or used directly for
+    evaluation.
+    To create a `BlackjackPPONDNFMutexTanhAgent` agent, pass in the following
+    parameters:
     - num_latent (int): the number of conjunctions allowed in the NDNF-MT
-    - action_size (int): the number of actions the agent can take
+    - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNFMutexTanh

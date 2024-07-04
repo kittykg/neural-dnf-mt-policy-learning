@@ -135,7 +135,7 @@ class SSCPPOBaseAgent(nn.Module):
 
 class SSCPPOMLPAgent(SSCPPOBaseAgent):
     """
-    An agent for door corridor environment, with a 2-layer MLP actor.
+    An agent for special state corridor environment, with a 2-layer MLP actor.
     To create a `SSCPPOMLP` agent, pass in the following parameters:
     - num_inputs (int): the number of input features
     - num_latent (int): the number of latent features
@@ -227,7 +227,7 @@ class SSCPPONDNFBasedAgent(SSCPPOBaseAgent):
 
 class SSCPPONDNFAgent(SSCPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNF` as actor.
+    An agent for special state corridor environment, with `NeuralDNF` as actor.
     This agent is not usually expected to use for training, but if treating the
     2 actions as binary classification (go left; not go left which is go right),
     it can be used for training. This agent is more expected to be used as a
@@ -249,7 +249,7 @@ class SSCPPONDNFAgent(SSCPPONDNFBasedAgent):
 
 class SSCPPONDNFEOAgent(SSCPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNFEO` actor.
+    An agent for special state corridor environment, with `NeuralDNFEO` actor.
     This agent is used for training, and to be converted to a `SSCPPONDNFAgent`
     for post-training evaluation.
     To create a `SSCPPONDNFEOAgent` agent, pass in the following parameters:
@@ -278,7 +278,8 @@ class SSCPPONDNFEOAgent(SSCPPONDNFBasedAgent):
 
 class SSCPPONDNFMutexTanhAgent(SSCPPONDNFBasedAgent):
     """
-    An agent for door corridor environment, with `NeuralDNFMutexTanh` actor.
+    An agent for special state corridor environment, with `NeuralDNFMutexTanh`
+    actor.
     This agent is used for training. It can be converted to a `SSCPPONDNFAgent`
     for post-training evaluation, or used directly for evaluation.
     To create a `SSCPPONDNFMutexTanhAgent` agent, pass in the following parameters:

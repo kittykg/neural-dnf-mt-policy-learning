@@ -1,51 +1,46 @@
-from pathlib import Path
+from collections import OrderedDict
 import random
+from pathlib import Path
 import time
 import traceback
 from typing import Any
 
 
 import gymnasium as gym
-from gymnasium.envs.toy_text.blackjack import BlackjackEnv
+from gymnasium.envs.toy_text.taxi import TaxiEnv
 from gymnasium.wrappers.record_video import RecordVideo
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 import hydra
 from hydra.core.hydra_config import HydraConfig
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
 import torch
-from torch import Tensor, nn, optim
+from torch import nn
+import torch.nn.functional as F
+import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 import wandb
-
 
 from neural_dnf import NeuralDNF, NeuralDNFEO, NeuralDNFMutexTanh
 from neural_dnf.neural_dnf import BaseNeuralDNF  # for type hinting
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
 
-from blackjack_common import *
 from common import init_params
+from taxi_common import *
 from utils import post_to_discord_webhook
 
-
-PPO_MODEL_DIR = Path(__file__).parent / "blackjack_ppo_storage/"
+PPO_MODEL_DIR = Path(__file__).parent / "taxi_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_TARGET_STATE = (16, 5, 1)
 
-
-class BlackjackPPOBaseAgent(nn.Module):
+class TaxiEnvPPOBaseAgent(nn.Module):
     """
     To create a base agent, pass in the following parameters:
-    - num_latent (int): the number of latent features
-    - use_decode_obs (bool): flag to use decode observation
-
-    The actor and critic networks are created using `_create_default_actor()`
-    and `_create_default_critic()` methods respectively.
+    - num_latent: The latent size of the agent
+    - use_decode_obs: Whether to use the decoded observation or not
     """
 
     # Model components
@@ -61,22 +56,21 @@ class BlackjackPPOBaseAgent(nn.Module):
     use_decode_obs: bool
     input_key: str
 
-    def __init__(
-        self,
-        num_latent: int,
-        use_decode_obs: bool,
-    ) -> None:
+    def __init__(self, num_latent: int, use_decode_obs: bool):
         super().__init__()
-
+        self.num_latent = num_latent
         self.use_decode_obs = use_decode_obs
+
+        self.num_inputs = (
+            N_DECODE_OBSERVATION_SIZE
+            if self.use_decode_obs
+            else N_OBSERVATION_SIZE
+        )
+
         if self.use_decode_obs:
             self.input_key = "decode_input"
         else:
             self.input_key = "input"
-        self.num_inputs = (
-            N_OBSERVATION_DECODE_SIZE if use_decode_obs else N_OBSERVATION_SIZE
-        )
-        self.num_latent = num_latent
 
         self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
@@ -136,17 +130,8 @@ class BlackjackPPOBaseAgent(nn.Module):
         return torch.distributions.Categorical(logits=logits)
 
     def _create_default_actor(self) -> nn.Module:
-        if self.use_decode_obs:
-            return nn.Sequential(
-                nn.Linear(N_OBSERVATION_DECODE_SIZE, self.num_latent),
-                nn.Tanh(),
-                nn.Linear(self.num_latent, self.action_size),
-            )
-
         return nn.Sequential(
-            nn.Linear(N_OBSERVATION_SIZE, 64),
-            nn.Tanh(),
-            nn.Linear(64, self.num_latent),
+            nn.Linear(self.num_inputs, self.num_latent),
             nn.Tanh(),
             nn.Linear(self.num_latent, self.action_size),
         )
@@ -154,25 +139,27 @@ class BlackjackPPOBaseAgent(nn.Module):
     def _create_default_critic(self) -> nn.Module:
         if self.use_decode_obs:
             return nn.Sequential(
-                nn.Linear(self.num_inputs, 64), nn.Tanh(), nn.Linear(64, 1)
+                nn.Linear(self.num_inputs, 512),
+                nn.ReLU(),
+                nn.Linear(512, 256),
+                nn.ReLU(),
+                nn.Linear(256, 1),
             )
-
-        return nn.Sequential(
-            nn.Linear(N_OBSERVATION_SIZE, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-        )
+        else:
+            return nn.Sequential(
+                nn.Linear(self.num_inputs, 512),
+                nn.ReLU(),
+                nn.Linear(512, 1),
+            )
 
     def _init_params(self) -> None:
         self.apply(init_params)
 
 
-class BlackjackPPOMLPAgent(BlackjackPPOBaseAgent):
+class TaxiEnvPPOMLPAgent(TaxiEnvPPOBaseAgent):
     """
-    An agent for gymnasium Blackjack environment, with a 2-layer MLP actor.
-    To create a `BlackjackPPOMLP` agent, pass in the following parameters:
+    An agent for gymnasium Taxi environment, with a 2-layer MLP actor.
+    To create a `TaxiEnvPPOMLPAgent` agent, pass in the following parameters:
     - num_latent (int): the number of latent features
     - use_decode_obs (bool): flag to use decode observation
 
@@ -181,20 +168,14 @@ class BlackjackPPOMLPAgent(BlackjackPPOBaseAgent):
     """
 
 
-class BlackjackPPONDNFBasedAgent(BlackjackPPOBaseAgent):
+class TaxiEnvPPONDNFBasedAgent(TaxiEnvPPOBaseAgent):
     """
     Base class for agents using a neural DNF module as the actor.
     """
 
     actor: BaseNeuralDNF
 
-    def __init__(self, num_latent: int, use_decode_obs: bool) -> None:
-        assert (
-            use_decode_obs
-        ), "Only decoded observation is supported for NDNF-based agent for now."
-        super().__init__(num_latent, use_decode_obs)
-
-    def _create_default_actor(self) -> nn.Module:
+    def _create_default_actor(self) -> BaseNeuralDNF:
         # This method should be overridden by the subclass
         raise NotImplementedError
 
@@ -265,70 +246,84 @@ class BlackjackPPONDNFBasedAgent(BlackjackPPOBaseAgent):
 
         return actions.cpu().numpy(), tanh_action.cpu().numpy()
 
+    def load_critic_from_trained_model(
+        self, model_path: Path, disable_critic_training: bool = False
+    ):
+        """
+        Load the critic from a trained model.
+        """
+        full_model = torch.load(model_path)
+        critic_dict = OrderedDict()
+        for k in full_model.keys():
+            if "critic" in k:
+                ck = k.replace("critic.", "")
+                critic_dict[ck] = full_model[k]
+        self.critic.load_state_dict(critic_dict)
 
-class BlackjackPPONDNFAgent(BlackjackPPONDNFBasedAgent):
+        if disable_critic_training:
+            for param in self.critic.parameters():
+                param.requires_grad = False
+
+
+class TaxiEnvPPONDNFAgent(TaxiEnvPPONDNFBasedAgent):
     """
-    An agent for gymnasium Blackjack environment, with `NeuralDNF` as actor.
+    An agent for gymnasium Taxi environment, with `NeuralDNF` as actor.
     This agent is not usually expected to use for training. This agent is more
     expected to be used as a post-training evaluation agent from either a
-    trained `BlackjackPPONDNFEOAgent` or `BlackjackPPONDNFMutexTanhAgent`.
-    To create a `BlackjackPPONDNFAgent` agent, pass in the following
-    parameters:
+    trained `TaxiEnvPPONDNFEOAgent` or `TaxiEnvPPONDNFMutexTanhAgent`.
+    To create a `TaxiEnvPPONDNFAgent` agent, pass in the following parameters:
     - num_latent (int): the number of conjunctions allowed in NDNF
     - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNF
 
-    def _create_default_actor(self) -> nn.Module:
+    def _create_default_actor(self) -> NeuralDNF:
         return NeuralDNF(
             self.num_inputs, self.num_latent, self.action_size, 1.0
         )
 
 
-class BlackjackPPONDNFEOAgent(BlackjackPPONDNFBasedAgent):
+class TaxiEnvPPONDNFEOAgent(TaxiEnvPPOBaseAgent):
     """
-    An agent for gymnasium Blackjack environment, with `NeuralDNFEO` actor.
+    An agent for gymnasium Taxi environment, with `NeuralDNFEO` actor.
     This agent is used for training, and to be converted to a
-    `BlackjackPPONDNFAgent` for post-training evaluation.
-    To create a `BlackjackPPONDNFEOAgent` agent, pass in the following
-    parameters:
+    `TaxiEnvPPONDNFAgent` for post-training evaluation.
+    To create a `TaxiEnvPPONDNFMTAgent` agent, pass in the following parameters:
     - num_latent (int): the number of conjunctions allowed in NDNF-EO
     - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNFEO
 
-    def _create_default_actor(self) -> nn.Module:
+    def _create_default_actor(self) -> NeuralDNFEO:
         return NeuralDNFEO(
             self.num_inputs, self.num_latent, self.action_size, 1.0
         )
 
-    def to_ndnf_agent(self) -> BlackjackPPONDNFAgent:
+    def to_ndnf_agent(self) -> TaxiEnvPPONDNFAgent:
         """
-        Convert this agent to a BlackjackPPONDNFAgent.
+        Convert this agent to a TaxiEnvPPONDNFAgent.
         """
-        ndnf_agent = BlackjackPPONDNFAgent(self.num_latent, self.use_decode_obs)
+        ndnf_agent = TaxiEnvPPONDNFAgent(self.num_latent, self.use_decode_obs)
         ndnf_agent.actor = self.actor.to_ndnf()
         return ndnf_agent
 
 
-class BlackjackPPONDNFMutexTanhAgent(BlackjackPPONDNFBasedAgent):
+class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
     """
-    An agent for gymnasium Blackjack environment, with `NeuralDNFMutexTanh`
-    actor.
+    An agent for gymnasium taxi environment, with `NeuralDNFMutexTanh` actor.
     This agent is used for training. It can be converted to a
-    `BlackjackPPONDNFAgent` for post-training evaluation, or used directly for
+    `TaxiEnvPPONDNFAgent` for post-training evaluation, or used directly for
     evaluation.
-    To create a `BlackjackPPONDNFMutexTanhAgent` agent, pass in the following
-    parameters:
+    To create a `TaxiEnvPPONDNFMTAgent` agent, pass in the following parameters:
     - num_latent (int): the number of conjunctions allowed in the NDNF-MT
     - use_decode_obs (bool): flag to use decode observation
     """
 
     actor: NeuralDNFMutexTanh
 
-    def _create_default_actor(self) -> nn.Module:
+    def _create_default_actor(self) -> NeuralDNFMutexTanh:
         return NeuralDNFMutexTanh(
             self.num_inputs, self.num_latent, self.action_size, 1.0
         )
@@ -454,25 +449,35 @@ def construct_model(
     use_decode_obs: bool,
     use_eo: bool = False,
     use_mt: bool = False,
-) -> BlackjackPPOBaseAgent:
+    pretrained_critic: dict | None = None,
+) -> TaxiEnvPPOBaseAgent:
     if not use_ndnf:
-        return BlackjackPPOMLPAgent(num_latent, use_decode_obs)
+        return TaxiEnvPPOMLPAgent(num_latent, use_decode_obs)
 
     assert not (
         use_eo and use_mt
     ), "EO constraint and Mutex Tanh mode should not be active together."
 
     if not use_eo and not use_mt:
-        return BlackjackPPONDNFAgent(num_latent, use_decode_obs)
-    if use_eo and not use_mt:
-        return BlackjackPPONDNFEOAgent(num_latent, use_decode_obs)
-    return BlackjackPPONDNFMutexTanhAgent(num_latent, use_decode_obs)
+        agent = TaxiEnvPPONDNFAgent(num_latent, use_decode_obs)
+    elif use_eo and not use_mt:
+        agent = TaxiEnvPPONDNFEOAgent(num_latent, use_decode_obs)
+    else:
+        agent = TaxiEnvPPONDNFMTAgent(num_latent, use_decode_obs)
+
+    if pretrained_critic is not None:
+        agent.load_critic_from_trained_model(
+            pretrained_critic["model_path"],
+            pretrained_critic["disable_critic_training"],
+        )
+
+    return agent
 
 
 def construct_single_environment(
     render_mode: str | None = "rgb_array",
-) -> BlackjackEnv:
-    env = gym.make("Blackjack-v1", render_mode=render_mode)
+) -> TaxiEnv:
+    env = gym.make("Taxi-v3", render_mode=render_mode)
     return env  # type: ignore
 
 
@@ -483,7 +488,7 @@ def make_env(seed: int, idx: int, capture_video: bool):
             video_dir = Path("videos")
             env = RecordVideo(env, str(video_dir.absolute()))
         else:
-            env = construct_single_environment()
+            env = construct_single_environment(None)
         env = RecordEpisodeStatistics(env)
 
         env.action_space.seed(seed)
@@ -492,151 +497,26 @@ def make_env(seed: int, idx: int, capture_video: bool):
     return thunk
 
 
-def blackjack_env_preprocess_obss(
-    obs_tuple: tuple[npt.NDArray],
+def taxi_env_preprocess_obs(
+    obs: np.ndarray,
     use_ndnf: bool,
     device: torch.device,
-    normalise: bool = False,
 ) -> dict[str, Tensor]:
-    tuple_array = np.stack(obs_tuple, axis=1)
+    # obs: (num_envs, )
+    input = F.one_hot(
+        torch.tensor(obs),
+        num_classes=N_OBSERVATION_SIZE,
+    ).float()
+    input = input.to(device)
 
-    input_np_arr = np.stack([non_decode_obs(t, normalise) for t in tuple_array])
-    decode_input_nd_array = np.stack([decode_tuple_obs(t) for t in tuple_array])
+    decode_input = torch.from_numpy(np.stack([decode(o) for o in obs])).float()
+    decode_input = decode_input.to(device)
 
     if use_ndnf:
-        decode_input_nd_array = np.where(
-            decode_input_nd_array == 0, -1, decode_input_nd_array
-        )
+        input = torch.where(input == 0, -1.0, input)
+        decode_input = torch.where(decode_input == 0, -1.0, decode_input)
 
-    return {
-        "input": torch.tensor(
-            input_np_arr,
-            dtype=torch.float32,
-            device=device,
-        ),
-        "decode_input": torch.tensor(
-            decode_input_nd_array,
-            dtype=torch.float32,
-            device=device,
-        ),
-    }
-
-
-def get_agent_policy(
-    agent: BlackjackPPOBaseAgent,
-    target_q_policy: TargetPolicyType,
-    device: torch.device,
-    normalise: bool = False,
-) -> Any:
-    """
-    Return the action distribution for the agent at all states presented in
-    `target_q_policy`.
-    """
-    obs_tuple_list = target_q_policy.keys()
-    input_np_arr = np.stack(
-        [non_decode_obs(t, normalise) for t in obs_tuple_list]
-    )
-    decode_input_nd_array = np.stack(
-        [decode_tuple_obs(t) for t in obs_tuple_list]
-    )
-
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
-        decode_input_nd_array = np.where(
-            decode_input_nd_array == 0, -1, decode_input_nd_array
-        )
-
-    obs_dict = {
-        "input": torch.tensor(
-            input_np_arr,
-            dtype=torch.float32,
-            device=device,
-        ),
-        "decode_input": torch.tensor(
-            decode_input_nd_array,
-            dtype=torch.float32,
-            device=device,
-        ),
-    }
-    with torch.no_grad():
-        action_dist = agent.get_action_distribution(obs_dict)
-
-    return action_dist.probs.cpu().numpy()  # type: ignore
-
-
-def track_action_distribution(
-    agent: BlackjackPPOBaseAgent,
-    device: torch.device,
-    target_state: tuple[int, int, int] = DEFAULT_TARGET_STATE,
-) -> float:
-    """
-    Return the probability of HIT at `target_state` for the agent.
-    """
-    input_np_arr = np.array([list(target_state)])
-    decode_input_nd_array = np.stack([decode_tuple_obs(target_state)])
-
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
-        decode_input_nd_array = np.where(
-            decode_input_nd_array == 0, -1, decode_input_nd_array
-        )
-
-    obs_dict = {
-        "input": torch.tensor(
-            input_np_arr,
-            dtype=torch.float32,
-            device=device,
-        ),
-        "decode_input": torch.tensor(
-            decode_input_nd_array,
-            dtype=torch.float32,
-            device=device,
-        ),
-    }
-    with torch.no_grad():
-        action_dist = agent.get_action_distribution(obs_dict)
-
-    return action_dist.probs.cpu().numpy()[0, 1]  # type: ignore
-
-
-def plot_policy_grid_after_train(
-    target_policy_csv_path: Path,
-    agent: BlackjackPPOBaseAgent,
-    device: torch.device,
-    model_name: str,
-    use_wandb: bool,
-) -> None:
-    target_policy = get_target_policy(target_policy_csv_path)
-    action_distribution = get_agent_policy(agent, target_policy, device)
-    plot = create_policy_plots(
-        target_policy,
-        action_distribution,
-        model_name,
-        argmax=True,
-        plot_diff=True,
-    )
-    plot.savefig(f"{model_name}_argmax_policy_cmp_q.png")
-    if use_wandb:
-        wandb.log(
-            {
-                "argmax_policy": wandb.Image(
-                    f"{model_name}_argmax_policy_cmp_q.png"
-                )
-            }
-        )
-    plt.close()
-
-    plot = create_policy_plots(
-        target_policy,
-        action_distribution,
-        model_name,
-        argmax=False,
-        plot_diff=True,
-    )
-    plot.savefig(f"{model_name}_soft_policy_cmp_q.png")
-    if use_wandb:
-        wandb.log(
-            {"soft_policy": wandb.Image(f"{model_name}_soft_policy_cmp_q.png")}
-        )
-    plt.close()
+    return {"input": input, "decode_input": decode_input}
 
 
 def train_ppo(
@@ -645,7 +525,7 @@ def train_ppo(
     use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, BlackjackPPOBaseAgent]:
+) -> tuple[Path | None, TaxiEnvPPOBaseAgent]:
     use_ndnf = "ndnf" in full_experiment_name
     use_decode_obs = training_cfg["use_decode_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
@@ -671,15 +551,14 @@ def train_ppo(
 
     # Env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(i, i, False) for i in range(training_cfg["num_envs"])]
+        [make_env(i, i, False) for i in range(training_cfg["num_envs"])],
     )
     assert isinstance(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    # Set up the model
     agent = construct_model(
-        num_latent=training_cfg["model_latent_size"],
+        num_latent=training_cfg["num_latent_size"],
         use_ndnf=use_ndnf,
         use_decode_obs=use_decode_obs,
         use_eo="use_eo" in training_cfg and training_cfg["use_eo"],
@@ -714,12 +593,10 @@ def train_ppo(
     global_step = 0
     start_time = time.time()
     next_obs, _ = envs.reset()
-    next_obs_dict = blackjack_env_preprocess_obss(next_obs, use_ndnf, device)
+    next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
     next_done = torch.zeros(num_envs).to(device)
 
-    last_episodic_return = None
-
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+    if isinstance(agent, TaxiEnvPPONDNFMTAgent):
         dds_cfg = training_cfg["dds"]
         dds = DeltaDelayedExponentialDecayScheduler(
             initial_delta=dds_cfg["initial_delta"],
@@ -756,11 +633,11 @@ def train_ppo(
                 action.cpu().numpy()
             )
             next_done = np.logical_or(terminations, truncations)
-            rewards[step] = torch.tensor(reward).float().to(device).view(-1)
-            next_obs_dict = blackjack_env_preprocess_obss(
-                next_obs, use_ndnf, device
-            )
+            rewards[step] = torch.tensor(reward).to(device).view(-1)
+            next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
             next_done = torch.Tensor(next_done).to(device)
+
+            last_episodic_return = None
 
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -770,8 +647,7 @@ def train_ppo(
                             and step == num_steps - 1
                         ):
                             print(
-                                f"global_step={global_step}, "
-                                f"episodic_return={info['episode']['r']}"
+                                f"global_step={global_step}, episodic_return={info['episode']['r']}"
                             )
                         writer.add_scalar(
                             "charts/episodic_return",
@@ -812,7 +688,7 @@ def train_ppo(
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1, num_inputs))
+        b_obs = obs.reshape((-1, num_inputs))  # type: ignore
         b_log_probs = log_probs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)  # type: ignore
         b_advantages = advantages.reshape(-1)
@@ -884,7 +760,7 @@ def train_ppo(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                if isinstance(agent, BlackjackPPONDNFBasedAgent):
+                if isinstance(agent, TaxiEnvPPONDNFBasedAgent):
                     aux_loss_dict = agent.get_aux_loss(next_obs_dict)
 
                     l_disj_l1_mod_lambda = training_cfg["aux_loss"][
@@ -899,7 +775,7 @@ def train_ppo(
                     l_tanh_conj = aux_loss_dict["l_tanh_conj"]
                     loss += l_tanh_conj_lambda * l_tanh_conj
 
-                    if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+                    if isinstance(agent, TaxiEnvPPONDNFMTAgent):
                         l_mt_ce2_lambda = training_cfg["aux_loss"][
                             "mt_ce2_lambda"
                         ]
@@ -924,7 +800,7 @@ def train_ppo(
             np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
         )
 
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, TaxiEnvPPONDNFBasedAgent):
             delta_dict = dds.step(agent.actor)
             new_delta = delta_dict["new_delta_vals"][0]
             old_delta = delta_dict["old_delta_vals"][0]
@@ -944,7 +820,7 @@ def train_ppo(
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
         )
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, TaxiEnvPPONDNFMTAgent):
             writer.add_scalar(
                 "losses/l_disj_l1_mod", l_disj_l1_mod.item(), global_step
             )
@@ -952,12 +828,12 @@ def train_ppo(
                 "losses/l_tanh_conj", l_tanh_conj.item(), global_step
             )
 
-            if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+            if isinstance(agent, TaxiEnvPPONDNFMTAgent):
                 writer.add_scalar(
                     "losses/l_mt_ce2", l_mt_ce2.item(), global_step
                 )
 
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, TaxiEnvPPONDNFMTAgent):
             writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
             if new_delta != old_delta:  # type: ignore
                 print(
@@ -967,11 +843,6 @@ def train_ppo(
                 )  # type: ignore
 
         writer.add_scalar(
-            f"charts/action_hit_prob_at_{DEFAULT_TARGET_STATE}",
-            track_action_distribution(agent, device),
-            global_step,
-        )
-        writer.add_scalar(
             "charts/SPS",
             int(global_step / (time.time() - start_time)),
             global_step,
@@ -979,18 +850,6 @@ def train_ppo(
 
     envs.close()
     writer.close()
-
-    if "plot_policy" in training_cfg and training_cfg["plot_policy"]:
-        assert "target_policy_csv_path" in training_cfg
-        assert training_cfg["target_policy_csv_path"] is not None
-
-        plot_policy_grid_after_train(
-            training_cfg["target_policy_csv_path"],
-            agent,
-            device,
-            full_experiment_name,
-            use_wandb,
-        )
 
     if save_model:
         model_dir = PPO_MODEL_DIR / full_experiment_name
@@ -1004,24 +863,30 @@ def train_ppo(
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
-def run_experiment(cfg: DictConfig) -> None:
+def run_experiment(cfg: DictConfig):
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
 
     full_experiment_name = f"{training_cfg['experiment_name']}_{seed}"
 
     # Set random seed
-    torch.manual_seed(seed)
-    np.random.seed(seed)
     random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Expect the experiment name to be in the format of
+    # taxi_ppo_{model type}_...
+    name_list = training_cfg["experiment_name"].split("_")
+    # Insert "raw"/"dec" after model type to indicate whether to use
+    # the raw observation or the decoded observation
+    name_list.insert(3, "dec" if training_cfg["use_decode_obs"] else "raw")
+    name_list.append(str(seed))
+    full_experiment_name = "_".join(name_list)
 
     # For wandb and output dir name, capitalise the first 2 words:
-    # 'blackjack' and 'ppo'
+    # 'taxi' and 'ppo'
     run_dir_name = "-".join(
-        [
-            (s.upper() if i in [0, 1] else s)
-            for i, s in enumerate(full_experiment_name.split("_"))
-        ]
+        [(s.upper() if i in [0, 1] else s) for i, s in enumerate(name_list)]
     )
 
     use_wandb = cfg["wandb"]["use_wandb"]

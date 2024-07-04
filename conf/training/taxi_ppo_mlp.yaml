@@ -1,0 +1,32 @@
+experiment_name: taxi_ppo_mlp_al128_1e6
+
+seed: 73
+use_cuda: False
+use_mps: False
+
+use_decode_obs: False
+num_latent_size: 128
+
+log_interval: 100
+
+total_timesteps: 1e6
+learning_rate: 1e-2
+num_envs: 8
+num_steps: 128
+anneal_lr: True
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+norm_adv: True
+clip_coef: 0.3 
+clip_vloss: True
+ent_coef: 0.1
+vf_coef: 1
+max_grad_norm: 0.5
+target_kl: null
+
+# Video recording disabled for now
+# video_recording: True
+# video_recording_freq: 1000
+# video_recording_env_seed: 123

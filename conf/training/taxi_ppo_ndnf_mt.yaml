@@ -1,0 +1,50 @@
+experiment_name: taxi_ppo_ndnfmt_al128_5e6
+
+seed: 73
+use_cuda: False
+use_mps: False
+
+use_decode_obs: False
+num_latent_size: 128
+
+use_eo: False
+use_mt: True
+
+log_interval: 100
+
+dds:
+  initial_delta: 0.1
+  delta_decay_delay: 300
+  delta_decay_steps: 100
+  delta_decay_rate: 1.1
+
+aux_loss:
+  dis_l1_mod_lambda: 1e-6
+  tanh_conj_lambda: 0
+  mt_ce2_lambda: 1e-4
+
+# pretrained_critic:
+#   model_path: null # fill this in with the path to another model's state dict
+#   disable_critic_training: True
+
+total_timesteps: 5e6
+learning_rate: 1e-2
+num_envs: 8
+num_steps: 128
+anneal_lr: True
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 4
+update_epochs: 4
+norm_adv: True
+clip_coef: 0.3 
+clip_vloss: True
+ent_coef: 0.1
+vf_coef: 1
+max_grad_norm: 0.5
+target_kl: null
+
+# Video recording disabled for now
+# video_recording: True
+# video_recording_freq: 1000
+# video_recording_env_seed: 123

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 import random
 import time
@@ -36,6 +37,7 @@ if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_TARGET_STATE = (16, 5, 1)
+log = logging.getLogger()
 
 
 class BlackjackPPOBaseAgent(nn.Module):
@@ -639,6 +641,51 @@ def plot_policy_grid_after_train(
     plt.close()
 
 
+def ndnf_based_agent_cmp_target_csv(
+    target_policy_csv_path: Path,
+    agent: BlackjackPPONDNFBasedAgent,
+    device: torch.device,
+) -> dict[str, Any]:
+    logs: dict[str, Any] = {
+        "mutual_exclusivity": True,
+        "missing_actions": False,
+    }
+
+    target_policy = get_target_policy(target_policy_csv_path)
+
+    obs_list = [obs for obs in target_policy.keys()]
+    target_q_actions = np.array([target_policy[obs] for obs in obs_list])
+    decode_input_nd_array = np.stack(
+        [decode_tuple_obs(obs) for obs in obs_list]
+    )
+    decode_input_nd_array = np.where(
+        decode_input_nd_array == 0, -1, decode_input_nd_array
+    )
+
+    with torch.no_grad():
+        actions, tanh_actions = agent.get_actions(
+            preprocessed_obs={
+                "decode_input": torch.tensor(
+                    decode_input_nd_array, dtype=torch.float32, device=device
+                )
+            },
+            use_argmax=True,
+        )
+
+    tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
+    if np.any(tanh_actions_discretised > 1):
+        logs["mutual_exclusivity"] = False
+    if np.any(tanh_actions_discretised == 0):
+        logs["missing_actions"] = True
+
+    policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
+        target_q_actions
+    )
+    logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
+
+    return logs
+
+
 def train_ppo(
     training_cfg: DictConfig,
     full_experiment_name: str,
@@ -980,6 +1027,7 @@ def train_ppo(
     envs.close()
     writer.close()
 
+    agent.eval()
     if "plot_policy" in training_cfg and training_cfg["plot_policy"]:
         assert "target_policy_csv_path" in training_cfg
         assert training_cfg["target_policy_csv_path"] is not None
@@ -991,6 +1039,20 @@ def train_ppo(
             full_experiment_name,
             use_wandb,
         )
+
+        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+            logs = ndnf_based_agent_cmp_target_csv(
+                training_cfg["target_policy_csv_path"], agent, device
+            )
+            log.info(logs)
+            if use_wandb:
+                mod_logs = {}
+                for k, v in logs.items():
+                    if isinstance(v, bool):
+                        mod_logs[f"ndnf_based_agent/{k}"] = int(v)
+                    else:
+                        mod_logs[f"ndnf_based_agent/{k}"] = v
+                wandb.log(mod_logs)
 
     if save_model:
         model_dir = PPO_MODEL_DIR / full_experiment_name

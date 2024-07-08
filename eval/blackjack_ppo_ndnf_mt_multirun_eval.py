@@ -40,11 +40,13 @@ from blackjack_common import (
     decode_tuple_obs,
     get_target_policy,
     create_policy_plots_from_asp,
+    create_policy_plots_from_action_distribution,
     TargetPolicyType,
 )
 from blackjack_ppo import (
     construct_model,
     construct_single_environment,
+    get_agent_policy,
     BlackjackPPONDNFMutexTanhAgent,
 )
 from eval.common import ToyTextEnvFailureCode
@@ -169,6 +171,19 @@ def post_training(
         log.info("NDNF MT is not mutually exclusive!")
         return ToyTextEnvFailureCode.FAIL_AT_EVAL_NDNF_MT_NOT_ME
 
+    action_distribution = get_agent_policy(
+        model, target_policy, torch.device("cpu")
+    )
+    plot = create_policy_plots_from_action_distribution(
+        target_policy,
+        action_distribution,
+        model_dir.name,
+        argmax=True,
+        plot_diff=True,
+    )
+    plot.savefig(f"{model_dir.name}_policy.png")
+    plt.close()
+
     log.info("======================================")
 
     # Stage 2: Prune the model
@@ -261,6 +276,19 @@ def post_training(
         torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
 
     _simulate_with_print("NDNF MT pruned")
+
+    action_distribution = get_agent_policy(
+        model, target_policy, torch.device("cpu")
+    )
+    plot = create_policy_plots_from_action_distribution(
+        target_policy,
+        action_distribution,
+        f"{model_dir.name}_pruned",
+        argmax=True,
+        plot_diff=True,
+    )
+    plot.savefig(f"{model_dir.name}_pruned_policy.png")
+    plt.close()
 
     log.info("======================================")
 
@@ -357,6 +385,19 @@ def post_training(
 
     _simulate_with_print("NDNF MT (thresholded)")
 
+    action_distribution = get_agent_policy(
+        model, target_policy, torch.device("cpu")
+    )
+    plot = create_policy_plots_from_action_distribution(
+        target_policy,
+        action_distribution,
+        f"{model_dir.name}_thresholded",
+        argmax=True,
+        plot_diff=True,
+    )
+    plot.savefig(f"{model_dir.name}_thresholded_policy.png")
+    plt.close()
+
     log.info("======================================")
 
     # 4. Rule extraction
@@ -376,7 +417,7 @@ def post_training(
     res_list = []
 
     for i in range(BLACKJACK_SINGLE_ENV_NUM_EPISODES):
-        obs, _ = single_env.reset(seed=i)
+        obs, _ = single_env.reset()
 
         terminated = False
         truncated = False

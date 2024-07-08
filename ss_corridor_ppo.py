@@ -15,6 +15,7 @@ import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
 import torch
 from torch import Tensor, nn, optim
+from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 import wandb
 
@@ -92,7 +93,7 @@ class SSCPPOBaseAgent(nn.Module):
         """
         x = preprocessed_obs["input"]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
+        dist = Categorical(logits=logits)
 
         if action is None:
             action = dist.sample()
@@ -112,10 +113,20 @@ class SSCPPOBaseAgent(nn.Module):
         """
         x = preprocessed_obs["input"]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
+        dist = Categorical(logits=logits)
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
         return actions.cpu().numpy()
+
+    def get_action_distribution(
+        self, preprocessed_obs: dict[str, Tensor]
+    ) -> Categorical:
+        """
+        Return the action distribution based on the observation.
+        """
+        x = preprocessed_obs["input"]
+        logits = self.actor(x)
+        return Categorical(logits=logits)
 
     def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
@@ -215,7 +226,7 @@ class SSCPPONDNFBasedAgent(SSCPPOBaseAgent):
 
         with torch.no_grad():
             raw_actions = self.get_actor_output(preprocessed_obs)
-        dist = torch.distributions.Categorical(logits=raw_actions)
+        dist = Categorical(logits=raw_actions)
         if use_argmax:
             actions = dist.probs.max(1)[1]  # type: ignore
         else:
@@ -305,7 +316,7 @@ class SSCPPONDNFMutexTanhAgent(SSCPPONDNFBasedAgent):
         """
         x = preprocessed_obs["input"]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(probs=(logits + 1) / 2)
+        dist = Categorical(probs=(logits + 1) / 2)
 
         if action is None:
             action = dist.sample()
@@ -360,7 +371,7 @@ class SSCPPONDNFMutexTanhAgent(SSCPPONDNFBasedAgent):
         with torch.no_grad():
             x = preprocessed_obs["input"]
             act = self.actor(x)
-            dist = torch.distributions.Categorical(probs=(act + 1) / 2)
+            dist = Categorical(probs=(act + 1) / 2)
             tanh_actions = torch.tanh(self.actor.get_raw_output(x))
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
@@ -369,6 +380,16 @@ class SSCPPONDNFMutexTanhAgent(SSCPPONDNFBasedAgent):
             actions.detach().cpu().numpy(),
             tanh_actions.detach().cpu().numpy(),
         )
+
+    def get_action_distribution(
+        self, preprocessed_obs: dict[str, Tensor]
+    ) -> Categorical:
+        """
+        Return the action distribution based on the observation.
+        """
+        x = preprocessed_obs["input"]
+        act = self.actor(x)
+        return Categorical(probs=(act + 1) / 2)
 
     def get_aux_loss(
         self, preprocessed_obs: dict[str, Tensor]

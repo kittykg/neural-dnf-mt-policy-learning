@@ -13,7 +13,6 @@ use_eo: False
 use_mt: True
 
 aux_loss:
-  emb_dis_lambda: 3e-15
   dis_l1_mod_lambda: 0
   tanh_conj_lambda: 0
   mt_ce2_lambda: 1e-3 # for NDNF-MT

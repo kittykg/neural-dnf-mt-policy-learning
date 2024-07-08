@@ -221,15 +221,15 @@ def _generate_policy_with_diff_support(
 
 
 def create_target_policy_plots(
-    target_policy: TargetPolicyType, model_name: str, argmax: bool = True
+    target_policy: TargetPolicyType, model_name: str
 ) -> Figure:
     target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
-    policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
+    policy_type = "Argmax Policy"
     return _generate_policy_with_diff_support(
         policy_ace=target_policy_ace,
         policy_no_ace=target_policy_no_ace,
         suptitle=f"{policy_type} for {model_name}",
-        argmax=argmax,
+        argmax=True,
     )
 
 

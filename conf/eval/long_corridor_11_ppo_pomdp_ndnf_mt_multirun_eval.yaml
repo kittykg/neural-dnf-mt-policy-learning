@@ -1,0 +1,11 @@
+experiment_name: lc11_ws_ppo_ndnf_mt_l4_1e5_aux
+multirun_seeds: [623, 728, 1509, 2068, 2464, 2704, 4397, 4487, 4900, 5355, 6707, 6715, 8218, 8291, 9089, 9415]
+
+model_latent_size: 4
+
+# Long corridor configuration
+long_corridor:
+  corridor_length: 11
+  start_state: 7
+  goal_state: 3
+  special_states: [5, 6, 7, 8]

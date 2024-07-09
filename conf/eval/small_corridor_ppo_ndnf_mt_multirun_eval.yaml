@@ -1,8 +1,4 @@
 experiment_name: sc_sn_ppo_ndnf_mt_l4_1e5_aux
 multirun_seeds: [9, 574, 924, 1413, 2668, 5043, 5053, 5745, 5772, 5925, 6288, 6623, 7896, 8463, 9222, 9538]
 
-
-use_argmax_to_choose_action: True
-
 model_latent_size: 4
-use_state_no_as_obs: True

@@ -1,11 +1,7 @@
 experiment_name: lc5_sn_ppo_ndnf_mt_l4_1e5_aux
 multirun_seeds: [511, 1429, 1593, 2294, 3112, 3594, 3776, 4569, 4893, 4953, 5345, 6511, 6913, 9346, 9413, 9478]
 
-
-use_argmax_to_choose_action: True
-
 model_latent_size: 4
-use_state_no_as_obs: True
 
 # Long corridor configuration
 long_corridor:

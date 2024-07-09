@@ -1,0 +1,4 @@
+experiment_name: sc_ws_ppo_ndnf_mt_l4_1e5_aux
+multirun_seeds: [730, 2151, 2423, 2863, 2893, 3457, 3673, 4292, 4479, 6146, 7042, 7492, 7569, 8884, 9019, 9785]
+
+model_latent_size: 4

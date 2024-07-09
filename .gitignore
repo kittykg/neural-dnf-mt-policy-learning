@@ -181,6 +181,7 @@ conf/secret.yaml
 conf/wandb/wandb.yaml
 conf/webhook/webhook.yaml
 
-# Scripts
+# Scripts and its outputs
 s.sh
 script/
+seeds.txt

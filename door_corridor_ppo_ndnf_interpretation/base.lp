@@ -1,104 +1,88 @@
-% The base idea of the interpretation is map a observation either positively or
-% negatively to an image encoding.
-% The mapping between observations and image encodings should be n to 1, i.e.,
-% many observations can be needed by an image encoding.
-% But an observation with a sign can't be mapped to more than one encoding.
-% The mapping is represented as include(a(I), obs(X, Y, O, S), Sign)
+% Defining what observations has to hold at a given time for a predicate to be
+% true at that same given time. Atom `a(I)` refers to policy atom with id `I`
+% where `I` is an integer
+% e.g.
+% include(a(5), obs(1, 1, 3, 1), pos).
+% include(a(5), obs(2, 2, 3, 1), neg).
 
+-fired_img_encoding_gt(T, a(I)) :-
+    timestamp(T), img_encoding_id(I),
+    not fired_img_encoding_gt(T, a(I)).
 
-% TODO:
-% At each time, check the action
-% Ensure the image encoding(s) needed is fired for that action
-% So need to change the definition of `fired_img_encoding`
+% What facts are true at some given time: `fired_obs_at_timestep(T, Obs)`
+% Generate classic negation from NAF
+% e.g.
+% fired_obs_at_timestep(1, obs(1, 1, 3, 1)).
+% -fired_obs_at_timestep(1, obs(2, 2, 3, 1)).
+-fired_obs_at_timestep(T, obs(X, Y, O, S)) :-
+    timestamp(T), is_possible_observation(obs(X, Y, O, S)),
+    not fired_obs_at_timestep(T, obs(X, Y, O, S)).
 
-% ------------------------------------------------------------------------------
-% ------------------------------------------------------------------------------
-
-% fired_img_encoding/2
-% This predicate is true if under the obs-enc mapping, image encoding a(I) is
-% fired at time T. It requires all the observations needed by the image encoding
-% to be fired correctly with the correct sign.
-fired_img_encoding_from_inclusion(Time, a(I)) :-
-    timestamp(Time),
-    img_encoding_id(I),
-    #count { X, Y, O, S: include_observation_for_encoding(Time, obs(X, Y, O, S), a(I))} = Count,
-    #count { X, Y, O, S: include(a(I), obs(X, Y, O, S), Sign)} = Count,
-    Count > 0.
-
-% include_observation_for_encoding/3
-% This predicate is the helper predicate for fired_img_encoding/2. It is true if
-% the mapping between the observation and the encoding is positive; or the
-% mapping between the observation and the encoding is negative.
-include_observation_for_encoding(Time, obs(X, Y, O, S), a(I)) :-
-    timestamp(Time),
-    img_encoding_id(I),
+% Determine if a policy atom holds for a given time step
+-a_fired_at_timestep(T, a(I)) :-
+    timestamp(T), img_encoding_id(I),
     is_possible_observation(obs(X, Y, O, S)),
     include(a(I), obs(X, Y, O, S), pos),
-    fired_observation(Time, obs(X, Y, O, S)).
+    -fired_obs_at_timestep(T, obs(X, Y, O, S)).
 
-include_observation_for_encoding(Time, obs(X, Y, O, S), a(I)) :-
-    timestamp(Time),
-    img_encoding_id(I),
+-a_fired_at_timestep(T, a(I)) :-
+    timestamp(T), img_encoding_id(I),
     is_possible_observation(obs(X, Y, O, S)),
     include(a(I), obs(X, Y, O, S), neg),
-    not fired_observation(Time, obs(X, Y, O, S)).
+    fired_obs_at_timestep(T, obs(X, Y, O, S)).
+
+a_fired_at_timestep(T, a(I)) :-
+    timestamp(T), img_encoding_id(I),
+    not -a_fired_at_timestep(T, a(I)).
+
+% -a_fired_at_timestep(T, a(I)) :-
+%     timestamp(T), img_encoding_id(I),
+%     not a_fired_at_timestep(T, a(I)).
 
 % ------------------------------------------------------------------------------
 %                               Hard constraint
 % ------------------------------------------------------------------------------
 
-% For a given observation, it can't be both positively/negatively mapped to
-% two different image encodings.
-:- img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
-    include(a(I), obs(X, Y, O, S), Sign), include(a(J), obs(X, Y, O, S), Sign), I != J.
-
 % An image encoding has to have at least one observation needed.
 :- img_encoding_id(I), #count{ X, Y, O, S: include(a(I), obs(X, Y, O, S), Sign) } = 0.
 
-% :- timestamp(T), img_encoding_id(I), fired_img_encoding(T, a(I)),
-%     not fired_img_encoding_from_inclusion(T, a(I)).
+% An observation with `Sign` can't bet used by two different image encodings
+:- img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
+    include(a(I), obs(X, Y, O, S), Sign), include(a(J), obs(X, Y, O, S), Sign), I != J.
 
-% :- timestamp(T), img_encoding_id(I), not fired_img_encoding(T, a(I)),
-%     fired_img_encoding_from_inclusion(T, a(I)).
+% If an image encoding is fired at time T, then using the inclusion mapping, the
+% image encoding should be fired to match it
+:- timestamp(T), img_encoding_id(I), fired_img_encoding_gt(T, a(I)),
+    -a_fired_at_timestep(T, a(I)).
 
-% If an image encoding a(I) is required to fire at time T, but with the mapping
-% it is not fired, then it is a violation.
-% :- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), pos),
-%     not fired_img_encoding_from_inclusion(T, a(I)).
+% If an image encoding is not fired at time T, then using the inclusion mapping,
+% the image encoding should not be fired to match it
+:- timestamp(T), img_encoding_id(I), -fired_img_encoding_gt(T, a(I)),
+    a_fired_at_timestep(T, a(I)).
 
-% If an image encoding a(I) is required to not fire at time T, but with the
-% mapping it is fired, then it is a violation.
-% :- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), pos),
-%     fired_img_encoding_from_inclusion(T, a(I)).
+% Using the mapping, at each time step, only one action (`disj`) can be fired
+% (this is the mutual exclusivity constraint on action)
+:- timestamp(T), disj(T, A), disj(T, B), disj_id(A), disj_id(B), A < B.
 
-% :- timestamp(T), img_encoding_id(I), required_img_encoding(T, a(I), neg),
-%     fired_img_encoding_from_inclusion(T, a(I)).
-
-% :- timestamp(T), img_encoding_id(I), not required_img_encoding(T, a(I), neg),
-%     not fired_img_encoding_from_inclusion(T, a(I)).
+% Never include the agent location observation for any image encoding
+:- img_encoding_id(I), is_possible_observation(obs(X, Y, 4, S)),
+    include(a(I), obs(X, Y, 4, S), _).
 
 % ------------------------------------------------------------------------------
 %                               Soft constraint
 % ------------------------------------------------------------------------------
 
 % Soft constraints (optimisation):
-% Reduce the number of mapping needed for an image encoding. Penalise at level 1
-% for penalty 1.
-:~ img_encoding_id(I), is_possible_observation(obs(X, Y, O, S)),
-    include(a(I), obs(X, Y, O, S), _). [1@3]
+% Reduce the number of mapping needed for an image encoding
+#minimize { Count @ 3, I : img_encoding_id(I), counting(a(I), Count) }.
 
+% Avoid using the same observation with different sign for two different image
+% encodings
 :~ img_encoding_id(I), img_encoding_id(J), is_possible_observation(obs(X, Y, O, S)),
     include(a(I), obs(X, Y, O, S), pos), include(a(J), obs(X, Y, O, S), neg), I != J. [1@2]
 
-% TODO: Priorities what is directly in front/left/right of the agent
-% Penalise the others at lowest level with penalty 1.
-:~ include(a(_), obs(0, 0, _, _), _). [1@1]
-:~ include(a(_), obs(0, 2, _, _), _). [1@1]
-:~ include(a(_), obs(1, 0, _, _), _). [1@1]
-:~ include(a(_), obs(1, 2, _, _), _). [1@1]
-:~ include(a(_), obs(_, _, 2, _), _). [1@1]
-:~ include(a(_), obs(2, 1, _, _), _). [1@1]
-:~ include(a(_), obs(_, _, _, _), neg). [1@1]
+% Avoid using observation with sign `neg` for an image encoding
+#minimize { 1 @ 1, I: include(a(I), obs(X, Y, O, S), neg) }.
 
 % ------------------------------------------------------------------------------
 %                               Helper predicates
@@ -114,7 +98,10 @@ counting(a(I), Count) :-
 %                               Show statements
 % ------------------------------------------------------------------------------
 
-% #show fired_img_encoding/2.
-% #show fired_img_encoding_from_inclusion/2.
-% #show include_observation_for_encoding/3.
+% #show fired_img_encoding_gt/2.
+% #show -fired_img_encoding_gt/2.
+% #show a_fired_at_timestep/2.
+% #show -a_fired_at_timestep/2.
+% #show disj/2.
+% #show counting/2.
 #show include/3.

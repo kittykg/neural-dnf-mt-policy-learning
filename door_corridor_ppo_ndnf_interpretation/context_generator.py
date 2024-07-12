@@ -97,14 +97,35 @@ def get_raw_context(
     conjunction_map = ret["conjunction_map"]
     disjunction_map = ret["disjunction_map"]
 
+    # Construct the action selection rules at each timestep.
+    # This is mutual exclusivity check for each action at each timestep.
+    action_check_rules = []
+    for i in disjunction_map.keys():
+        action_check_rules.append(f"disj_id({i}).")
+        for j, sign, _ in disjunction_map[i]:
+            body_str = "" if sign else "not "
+            body_str += f"conj_{j}(T)"
+            action_check_rules.append(
+                f"disj(T, {i}) :- timestamp(T), {body_str}."
+            )
+
+    for i, conjs in conjunction_map.items():
+        body_list = []
+        for j, sign, _ in conjs:
+            body_str = "" if sign else "-"
+            body_str += f"a_fired_at_timestep(T, a({j}))"
+            body_list.append(body_str)
+        action_check_rules.append(
+            f"conj_{i}(T) :-\n    " + ",\n    ".join(body_list) + "."
+        )
+
+    # Compute at each timestep, what image encodings are fired and what
+    # observations are fired
     terminated = False
     truncated = False
 
     all_raw_obs = []
     all_img_encoding = []
-    required_img_encoding_at_time: dict[
-        int, tuple[bool, list[tuple[int, bool]]]
-    ] = dict()
 
     time = 0
     while not terminated and not truncated:
@@ -118,9 +139,6 @@ def get_raw_context(
                 .float()
             }
             raw_img_encoding = model.get_img_encoding(
-                preprocessed_obs=preprocessed_obs
-            ).squeeze(0)
-            conjunctions_output = model.get_conjunction_output(
                 preprocessed_obs=preprocessed_obs
             ).squeeze(0)
 
@@ -167,52 +185,17 @@ def get_raw_context(
 
         action = list(output_classes_set)[0]
 
-        # Compute the required image encoding at this time
-        # Because the mutual exclusivity nature, there should be only one
-        # disjunction fired at a time. So only one conjunction that is used by
-        # this disjunction is fired at a time.
-        # We need to find the image encoding that triggers conjunction (pos or
-        # neg)
-        required_encoding = []
-        for c in disjunction_map[action]:
-            # c is type of Atom i.e. (int, bool, str)
-            c_id, c_sign, _ = c
-
-            # If the action uses multiple conjunction, check if this is the
-            # conjunction that is fired
-            if (conjunctions_output[c_id] > 0) != c_sign:
-                # This conjunction is not fired
-                continue
-
-            # This conjunction is fired
-            # Check the literals in the conjunction
-            if c_sign:
-                # Positive conjunction used in the rule
-                # So all literals required for this conjunction has to be true
-                for a in conjunction_map[c_id]:
-                    a_id, a_sign, _ = a
-                    required_encoding.append((a_id, a_sign))
-                required_img_encoding_at_time[time] = (True, required_encoding)
-
-            else:
-                # Negative conjunction used in the rule
-                # Either literal is false or not present in the rule is enough
-                for a in conjunction_map[c_id]:
-                    a_id, a_sign, _ = a
-                    required_encoding.append((a_id, not a_sign))
-                required_img_encoding_at_time[time] = (False, required_encoding)
-
         obs, _, terminated, truncated, _ = single_env.step(action)
         time += 1
 
     return {
+        "action_check_rules": action_check_rules,
         "all_raw_obs": all_raw_obs,
         "all_img_encoding": all_img_encoding,
-        "required_img_encoding_at_time": required_img_encoding_at_time,
     }
 
 
-def generate_context(
+def generate_context_from_single_model_and_asp(
     model: DCPPONDNFBasedAgent, asp_rules: str
 ) -> list[str] | None:
     raw_context_dict = get_raw_context(model, asp_rules)
@@ -225,11 +208,9 @@ def generate_context(
     for i in relevant_encoding_ids:
         asp_context.append(f"img_encoding_id({i}).")
 
+    action_check_rules = raw_context_dict["action_check_rules"]
     all_raw_obs = raw_context_dict["all_raw_obs"]
     all_img_encoding = raw_context_dict["all_img_encoding"]
-    required_img_encoding_at_time = raw_context_dict[
-        "required_img_encoding_at_time"
-    ]
     total_time = len(all_img_encoding)
 
     asp_context.append(f"timestamp(0..{total_time - 1}).")
@@ -249,7 +230,7 @@ def generate_context(
     # Choice rule
     for i in relevant_encoding_ids:
         asp_context.append(
-            f"{{ include(a({i}), ({';'.join(obs_lp)}), (pos;neg)) }} 1."
+            f"1 {{ include(a({i}), ({';'.join(obs_lp)}), (pos;neg)) }}."
         )
 
     # The context at each time step
@@ -259,50 +240,23 @@ def generate_context(
         for a in img_encoding:
             if a.item() in relevant_encoding_ids:
                 asp_context.append(
-                    f"fired_img_encoding({time}, a({a.item()}))."
+                    f"fired_img_encoding_gt({time}, a({a.item()}))."
                 )
 
         # What observations are fired at this time
         for x in range(3):
             for y in range(3):
                 asp_context.append(
-                    f"fired_observation({time}, obs({x}, {y}, {raw_obs[x, y, 0]}, {raw_obs[x, y, 1]}))."
+                    f"fired_obs_at_timestep({time}, obs({x}, {y}, {raw_obs[x, y, 0]}, {raw_obs[x, y, 1]}))."
                 )
 
-        # What img encodings are required at this time
-        required_encoding: tuple[bool, list[tuple[int, bool]]] = (
-            required_img_encoding_at_time[time]
-        )
-        if required_encoding[0]:
-            # All these image encodings are required
-            for a, sign in required_encoding[1]:
-                if sign:
-                    asp_context.append(
-                        f":- not fired_img_encoding_from_inclusion({time}, a({a}))."
-                    )
-                else:
-                    asp_context.append(
-                        f":- fired_img_encoding_from_inclusion({time}, a({a}))."
-                    )
-        else:
-            # At least one of these image encodings are required
-            constraints = []
-            for a, sign in required_encoding[1]:
-                # We check which one matches the encoding at this time
-                # We add those that matches the current encoding set
-                constraint_body_str = (
-                    f"fired_img_encoding_from_inclusion({time}, a({a}))"
-                )
-                if sign:
-                    constraint_body_str = f"not {constraint_body_str}"
-                constraints.append(constraint_body_str)
-
-            asp_context.append(f":- {', '.join(constraints)}.")
+    # The action check rules
+    asp_context.extend(action_check_rules)
 
     return asp_context
 
 
-def interpret_image_encoding(eval_cfg: DictConfig):
+def generate_context_multirun(eval_cfg: DictConfig):
     experiment_name = f"{eval_cfg['experiment_name']}"
     use_ndnf = "ndnf" in experiment_name
 
@@ -343,7 +297,7 @@ def interpret_image_encoding(eval_cfg: DictConfig):
         with open(model_dir / "asp_rules.lp", "r") as f:
             asp_rules = f.read()
 
-        context = generate_context(model, asp_rules)
+        context = generate_context_from_single_model_and_asp(model, asp_rules)
         if context is None:
             log.info(f"Failed to generate context for {model_dir.name}!")
             continue
@@ -356,7 +310,7 @@ def interpret_image_encoding(eval_cfg: DictConfig):
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
-def run_interpret(cfg: DictConfig) -> None:
+def run_generate_context(cfg: DictConfig) -> None:
     eval_cfg = cfg["eval"]
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
@@ -365,7 +319,7 @@ def run_interpret(cfg: DictConfig) -> None:
     keyboard_interrupt = None
 
     try:
-        interpret_image_encoding(eval_cfg)
+        generate_context_multirun(eval_cfg)
         if use_discord_webhook:
             msg_body = "Success!"
     except BaseException as e:
@@ -384,7 +338,7 @@ def run_interpret(cfg: DictConfig) -> None:
             webhook_url = cfg["webhook"]["discord_webhook_url"]
             post_to_discord_webhook(
                 webhook_url=webhook_url,
-                experiment_name=f"{eval_cfg['experiment_name']} Interpretation",
+                experiment_name=f"{eval_cfg['experiment_name']} Context Generation",
                 message_body=msg_body,
                 errored=errored,
                 keyboard_interrupt=keyboard_interrupt,
@@ -392,4 +346,4 @@ def run_interpret(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    run_interpret()
+    run_generate_context()

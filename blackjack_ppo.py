@@ -675,8 +675,21 @@ def ndnf_based_agent_cmp_target_csv(
     tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
     if np.any(tanh_actions_discretised > 1):
         logs["mutual_exclusivity"] = False
+        logs["mutual_exclusivity_violations_count"] = int(
+            np.count_nonzero(tanh_actions_discretised > 1)
+        )
+        logs["mutual_exclusivity_violations_states"] = [
+            obs_list[i] for i in np.where(tanh_actions_discretised > 1)[0]
+        ]
+
     if np.any(tanh_actions_discretised == 0):
         logs["missing_actions"] = True
+        logs["missing_actions_count"] = int(
+            np.count_nonzero(tanh_actions_discretised == 0)
+        )
+        logs["missing_actions_states"] = [
+            obs_list[i] for i in np.where(tanh_actions_discretised == 0)[0]
+        ]
 
     policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
         target_q_actions
@@ -692,7 +705,7 @@ def train_ppo(
     use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, BlackjackPPOBaseAgent]:
+) -> tuple[Path | None, BlackjackPPOBaseAgent, dict[str, Any] | None]:
     use_ndnf = "ndnf" in full_experiment_name
     use_decode_obs = training_cfg["use_decode_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
@@ -759,6 +772,7 @@ def train_ppo(
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
+    delta_one_count = 0
     start_time = time.time()
     next_obs, _ = envs.reset()
     next_obs_dict = blackjack_env_preprocess_obss(next_obs, use_ndnf, device)
@@ -932,26 +946,33 @@ def train_ppo(
                 optimizer.zero_grad(set_to_none=True)
 
                 if isinstance(agent, BlackjackPPONDNFBasedAgent):
-                    aux_loss_dict = agent.get_aux_loss(next_obs_dict)
+                    if agent.actor.get_delta_val()[
+                        0
+                    ] == 1 and delta_one_count > training_cfg["aux_loss"].get(
+                        "delta_one_delay", 3
+                    ):
+                        aux_loss_dict = agent.get_aux_loss(next_obs_dict)
 
-                    l_disj_l1_mod_lambda = training_cfg["aux_loss"][
-                        "dis_l1_mod_lambda"
-                    ]
-                    l_disj_l1_mod = aux_loss_dict["l_disj_l1_mod"]
-                    loss += l_disj_l1_mod_lambda * l_disj_l1_mod
-
-                    l_tanh_conj_lambda = training_cfg["aux_loss"][
-                        "tanh_conj_lambda"
-                    ]
-                    l_tanh_conj = aux_loss_dict["l_tanh_conj"]
-                    loss += l_tanh_conj_lambda * l_tanh_conj
-
-                    if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
-                        l_mt_ce2_lambda = training_cfg["aux_loss"][
-                            "mt_ce2_lambda"
+                        l_disj_l1_mod_lambda = training_cfg["aux_loss"][
+                            "dis_l1_mod_lambda"
                         ]
-                        l_mt_ce2 = aux_loss_dict["l_mt_ce2"]
-                        loss += l_mt_ce2_lambda * l_mt_ce2
+                        l_disj_l1_mod = aux_loss_dict["l_disj_l1_mod"]
+                        loss += l_disj_l1_mod_lambda * l_disj_l1_mod
+
+                        l_tanh_conj_lambda = training_cfg["aux_loss"][
+                            "tanh_conj_lambda"
+                        ]
+                        l_tanh_conj = aux_loss_dict["l_tanh_conj"]
+                        loss += l_tanh_conj_lambda * l_tanh_conj
+
+                        if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+                            l_mt_ce2_lambda = training_cfg["aux_loss"][
+                                "mt_ce2_lambda"
+                            ]
+                            l_mt_ce2 = aux_loss_dict["l_mt_ce2"]
+                            loss += l_mt_ce2_lambda * l_mt_ce2
+                    elif agent.actor.get_delta_val()[0] == 1:
+                        delta_one_count += 1
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(  # type: ignore
@@ -992,17 +1013,22 @@ def train_ppo(
             "losses/explained_variance", explained_var, global_step
         )
         if isinstance(agent, BlackjackPPONDNFBasedAgent):
-            writer.add_scalar(
-                "losses/l_disj_l1_mod", l_disj_l1_mod.item(), global_step
-            )
-            writer.add_scalar(
-                "losses/l_tanh_conj", l_tanh_conj.item(), global_step
-            )
-
-            if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+            if agent.actor.get_delta_val()[
+                0
+            ] == 1 and delta_one_count > training_cfg["aux_loss"].get(
+                "delta_one_delay", 3
+            ):
                 writer.add_scalar(
-                    "losses/l_mt_ce2", l_mt_ce2.item(), global_step
+                    "losses/l_disj_l1_mod", l_disj_l1_mod.item(), global_step
                 )
+                writer.add_scalar(
+                    "losses/l_tanh_conj", l_tanh_conj.item(), global_step
+                )
+
+                if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+                    writer.add_scalar(
+                        "losses/l_mt_ce2", l_mt_ce2.item(), global_step
+                    )
 
         if isinstance(agent, BlackjackPPONDNFBasedAgent):
             writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
@@ -1028,6 +1054,7 @@ def train_ppo(
     writer.close()
 
     agent.eval()
+    eval_log = None
     if "plot_policy" in training_cfg and training_cfg["plot_policy"]:
         assert "target_policy_csv_path" in training_cfg
         assert training_cfg["target_policy_csv_path"] is not None
@@ -1041,15 +1068,17 @@ def train_ppo(
         )
 
         if isinstance(agent, BlackjackPPONDNFBasedAgent):
-            logs = ndnf_based_agent_cmp_target_csv(
+            eval_log = ndnf_based_agent_cmp_target_csv(
                 training_cfg["target_policy_csv_path"], agent, device
             )
-            log.info(logs)
+            log.info(eval_log)
             if use_wandb:
                 mod_logs = {}
-                for k, v in logs.items():
+                for k, v in eval_log.items():
                     if isinstance(v, bool):
                         mod_logs[f"ndnf_based_agent/{k}"] = int(v)
+                    elif isinstance(v, list):
+                        continue
                     else:
                         mod_logs[f"ndnf_based_agent/{k}"] = v
                 wandb.log(mod_logs)
@@ -1060,9 +1089,9 @@ def train_ppo(
             model_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / "model.pth"
         torch.save(agent.state_dict(), model_path)
-        return model_path, agent
+        return model_path, agent, eval_log
 
-    return None, agent
+    return None, agent, eval_log
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -1126,7 +1155,7 @@ def run_experiment(cfg: DictConfig) -> None:
     keyboard_interrupt = None
 
     try:
-        model_path, _ = train_ppo(
+        model_path, _, _ = train_ppo(
             training_cfg, full_experiment_name, use_wandb, writer
         )
         assert model_path is not None

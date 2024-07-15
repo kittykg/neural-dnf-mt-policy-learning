@@ -185,3 +185,4 @@ conf/webhook/webhook.yaml
 s.sh
 script/
 seeds.txt
+wandb/

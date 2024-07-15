@@ -1,4 +1,4 @@
-experiment_name: blackjack_ppo_ndnf_mt_al4_3e5
+experiment_name: blackjack_ppo_ndnf_mt_al4_3e5_ad10
 
 seed: 73
 use_cuda: False
@@ -16,25 +16,25 @@ plot_policy: True
 target_policy_csv_path: ??? # to be filled in
 
 aux_loss:
+  delta_one_delay: 10
   dis_l1_mod_lambda: 1e-6
   tanh_conj_lambda: 0
-  mt_ce2_lambda: 1e-3
-
+  mt_ce2_lambda: 1e-1
 
 dds:
   initial_delta: 0.1
-  delta_decay_delay: 50
+  delta_decay_delay: 100
   delta_decay_steps: 10
   delta_decay_rate: 1.1
 
 total_timesteps: 3e5
-learning_rate: 1e-2
-num_envs: 8
-num_steps: 64
+learning_rate: 1e-5
+num_envs: 32
+num_steps: 16
 anneal_lr: True
 gamma: 0.99
 gae_lambda: 0.95
-num_minibatches: 8
+num_minibatches: 16
 update_epochs: 4
 norm_adv: True
 clip_coef: 0.3

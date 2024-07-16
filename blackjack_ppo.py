@@ -1053,23 +1053,20 @@ def train_ppo(
     envs.close()
     writer.close()
 
-    agent.eval()
     eval_log = None
     if "plot_policy" in training_cfg and training_cfg["plot_policy"]:
         assert "target_policy_csv_path" in training_cfg
         assert training_cfg["target_policy_csv_path"] is not None
 
-        plot_policy_grid_after_train(
-            training_cfg["target_policy_csv_path"],
-            agent,
-            device,
-            full_experiment_name,
-            use_wandb,
-        )
+        if isinstance(agent, BlackjackPPONDNFEOAgent):
+            eval_agent = agent.to_ndnf_agent()
+        else:
+            eval_agent = agent
+        eval_agent.eval()
 
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(eval_agent, BlackjackPPONDNFBasedAgent):
             eval_log = ndnf_based_agent_cmp_target_csv(
-                training_cfg["target_policy_csv_path"], agent, device
+                training_cfg["target_policy_csv_path"], eval_agent, device
             )
             log.info(eval_log)
             if use_wandb:
@@ -1082,6 +1079,14 @@ def train_ppo(
                     else:
                         mod_logs[f"ndnf_based_agent/{k}"] = v
                 wandb.log(mod_logs)
+
+        plot_policy_grid_after_train(
+            training_cfg["target_policy_csv_path"],
+            eval_agent,
+            device,
+            full_experiment_name,
+            use_wandb,
+        )
 
     if save_model:
         model_dir = PPO_MODEL_DIR / full_experiment_name

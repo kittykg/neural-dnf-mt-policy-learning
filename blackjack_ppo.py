@@ -28,7 +28,7 @@ from neural_dnf.neural_dnf import BaseNeuralDNF  # for type hinting
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
 
 from blackjack_common import *
-from common import init_params
+from common import init_params, DiversityScoreTracker
 from utils import post_to_discord_webhook
 
 
@@ -116,7 +116,7 @@ class BlackjackPPOBaseAgent(nn.Module):
 
     def get_actions(
         self, preprocessed_obs: dict[str, Tensor], use_argmax: bool = True
-    ):
+    ) -> npt.NDArray:
         """
         Return the actions based on the observation.
         """
@@ -524,25 +524,27 @@ def blackjack_env_preprocess_obss(
     }
 
 
-def get_agent_policy(
-    agent: BlackjackPPOBaseAgent,
-    target_q_policy: TargetPolicyType,
+def get_relevant_targets_from_target_policy(
+    use_ndnf: bool,
+    target_policy: TargetPolicyType,
     device: torch.device,
     normalise: bool = False,
-) -> Any:
+) -> dict[str, Any]:
     """
-    Return the action distribution for the agent at all states presented in
-    `target_q_policy`.
+    Return the observations, preprocessed observations and target actions from a
+    target policy trained from tabular Q-learning.
     """
-    obs_tuple_list = target_q_policy.keys()
+    obs_list = [obs for obs in target_policy.keys()]
+    target_q_actions = np.array([target_policy[obs] for obs in obs_list])
+
     input_np_arr = np.stack(
-        [non_decode_obs(t, normalise) for t in obs_tuple_list]
+        [non_decode_obs(obs, normalise) for obs in obs_list]
     )
     decode_input_nd_array = np.stack(
-        [decode_tuple_obs(t) for t in obs_tuple_list]
+        [decode_tuple_obs(obs) for obs in obs_list]
     )
 
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+    if use_ndnf:
         decode_input_nd_array = np.where(
             decode_input_nd_array == 0, -1, decode_input_nd_array
         )
@@ -559,13 +561,38 @@ def get_agent_policy(
             device=device,
         ),
     }
+
+    return {
+        "obs_list": obs_list,
+        "obs_dict": obs_dict,
+        "target_q_actions": target_q_actions,
+    }
+
+
+def get_agent_policy(
+    agent: BlackjackPPOBaseAgent,
+    target_q_policy: TargetPolicyType,
+    device: torch.device,
+    normalise: bool = False,
+) -> Any:
+    """
+    Return the action distribution for the agent at all states presented in
+    `target_q_policy`.
+    """
+    obs_dict = get_relevant_targets_from_target_policy(
+        isinstance(agent, BlackjackPPONDNFBasedAgent),
+        target_q_policy,
+        device,
+        normalise,
+    )["obs_dict"]
+
     with torch.no_grad():
         action_dist = agent.get_action_distribution(obs_dict)
 
     return action_dist.probs.cpu().numpy()  # type: ignore
 
 
-def track_action_distribution(
+def track_target_state_action_distribution(
     agent: BlackjackPPOBaseAgent,
     device: torch.device,
     target_state: tuple[int, int, int] = DEFAULT_TARGET_STATE,
@@ -606,6 +633,9 @@ def plot_policy_grid_after_train(
     model_name: str,
     use_wandb: bool,
 ) -> None:
+    """
+    Plot the agent policy grid after training
+    """
     target_policy = get_target_policy(target_policy_csv_path)
     action_distribution = get_agent_policy(agent, target_policy, device)
     plot = create_policy_plots_from_action_distribution(
@@ -631,7 +661,6 @@ def plot_policy_grid_after_train(
         action_distribution,
         model_name,
         argmax=False,
-        plot_diff=True,
     )
     plot.savefig(f"{model_name}_soft_policy_cmp_q.png")
     if use_wandb:
@@ -639,6 +668,36 @@ def plot_policy_grid_after_train(
             {"soft_policy": wandb.Image(f"{model_name}_soft_policy_cmp_q.png")}
         )
     plt.close()
+
+
+def mlp_agent_cmp_target_csv(
+    target_policy_csv_path: Path,
+    agent: BlackjackPPOMLPAgent,
+    device: torch.device,
+    normalise: bool = False,
+) -> dict[str, Any]:
+    logs: dict[str, Any] = {}
+
+    target_policy = get_target_policy(target_policy_csv_path)
+    ret = get_relevant_targets_from_target_policy(
+        False, target_policy, device, normalise
+    )
+    obs_dict = ret["obs_dict"]
+    target_q_actions = ret["target_q_actions"]
+
+    dst = DiversityScoreTracker()
+    with torch.no_grad():
+        actions = agent.get_actions(obs_dict)
+        dst.update(actions)
+
+    policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
+        target_q_actions
+    )
+    logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
+    logs["action_diversity_score"] = dst.compute_diversity_score()
+    logs["action_entropy"] = dst.compute_entropy()
+
+    return logs
 
 
 def ndnf_based_agent_cmp_target_csv(
@@ -652,25 +711,17 @@ def ndnf_based_agent_cmp_target_csv(
     }
 
     target_policy = get_target_policy(target_policy_csv_path)
+    ret = get_relevant_targets_from_target_policy(True, target_policy, device)
+    obs_list = ret["obs_list"]
+    obs_dict = ret["obs_dict"]
+    target_q_actions = ret["target_q_actions"]
 
-    obs_list = [obs for obs in target_policy.keys()]
-    target_q_actions = np.array([target_policy[obs] for obs in obs_list])
-    decode_input_nd_array = np.stack(
-        [decode_tuple_obs(obs) for obs in obs_list]
-    )
-    decode_input_nd_array = np.where(
-        decode_input_nd_array == 0, -1, decode_input_nd_array
-    )
-
+    dst = DiversityScoreTracker()
     with torch.no_grad():
         actions, tanh_actions = agent.get_actions(
-            preprocessed_obs={
-                "decode_input": torch.tensor(
-                    decode_input_nd_array, dtype=torch.float32, device=device
-                )
-            },
-            use_argmax=True,
+            preprocessed_obs=obs_dict, use_argmax=True
         )
+        dst.update(actions)
 
     tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
     if np.any(tanh_actions_discretised > 1):
@@ -695,6 +746,8 @@ def ndnf_based_agent_cmp_target_csv(
         target_q_actions
     )
     logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
+    logs["action_diversity_score"] = dst.compute_diversity_score()
+    logs["action_entropy"] = dst.compute_entropy()
 
     return logs
 
@@ -1041,7 +1094,7 @@ def train_ppo(
 
         writer.add_scalar(
             f"charts/action_hit_prob_at_{DEFAULT_TARGET_STATE}",
-            track_action_distribution(agent, device),
+            track_target_state_action_distribution(agent, device),
             global_step,
         )
         writer.add_scalar(
@@ -1068,17 +1121,25 @@ def train_ppo(
             eval_log = ndnf_based_agent_cmp_target_csv(
                 training_cfg["target_policy_csv_path"], eval_agent, device
             )
-            log.info(eval_log)
-            if use_wandb:
-                mod_logs = {}
-                for k, v in eval_log.items():
-                    if isinstance(v, bool):
-                        mod_logs[f"ndnf_based_agent/{k}"] = int(v)
-                    elif isinstance(v, list):
-                        continue
-                    else:
-                        mod_logs[f"ndnf_based_agent/{k}"] = v
-                wandb.log(mod_logs)
+        else:
+            eval_log = mlp_agent_cmp_target_csv(
+                training_cfg["target_policy_csv_path"],
+                eval_agent,  # type: ignore
+                device,
+                training_cfg["normalise_obs"],
+            )
+
+        log.info(eval_log)
+        if use_wandb:
+            mod_logs = {}
+            for k, v in eval_log.items():
+                if isinstance(v, bool):
+                    mod_logs[f"ndnf_based_agent/{k}"] = int(v)
+                elif isinstance(v, list):
+                    continue
+                else:
+                    mod_logs[f"ndnf_based_agent/{k}"] = v
+            wandb.log(mod_logs)
 
         plot_policy_grid_after_train(
             training_cfg["target_policy_csv_path"],

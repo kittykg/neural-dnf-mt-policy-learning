@@ -109,7 +109,7 @@ class BlackjackBaseAgent(nn.Module):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(x),
+            self.get_value(preprocessed_obs),
         )
 
     def get_actions(
@@ -187,16 +187,45 @@ class BlackjackNDNFBasedAgent(BlackjackBaseAgent):
     """
 
     actor: BaseNeuralDNF
+    share_conjunction_with_critic: bool
 
-    def __init__(self, num_latent: int, use_decode_obs: bool) -> None:
+    def __init__(
+        self,
+        num_latent: int,
+        use_decode_obs: bool,
+        share_conjunction_with_critic: bool = False,
+    ) -> None:
+        self.share_conjunction_with_critic = share_conjunction_with_critic
         assert (
             use_decode_obs
         ), "Only decoded observation is supported for NDNF-based agent for now."
         super().__init__(num_latent, use_decode_obs)
 
+    def get_value(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
+        """
+        Return the value of the state.
+        This function is used in PPO algorithm and A2C algorithm
+        """
+        if not self.share_conjunction_with_critic:
+            return super().get_value(preprocessed_obs)
+
+        x = preprocessed_obs[self.input_key]
+        x = self.actor.conjunctions(x)
+        return self.critic(torch.tanh(x))
+
     def _create_default_actor(self) -> nn.Module:
         # This method should be overridden by the subclass
         raise NotImplementedError
+
+    def _create_default_critic(self) -> nn.Module:
+        input_size = (
+            self.num_inputs
+            if not self.share_conjunction_with_critic
+            else self.num_latent
+        )
+        return nn.Sequential(
+            nn.Linear(input_size, 64), nn.Tanh(), nn.Linear(64, 1)
+        )
 
     def get_aux_loss(
         self, preprocessed_obs: dict[str, Tensor]
@@ -352,7 +381,7 @@ class BlackjackNDNFMutexTanhAgent(BlackjackNDNFBasedAgent):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(x),
+            self.get_value(preprocessed_obs),
         )
 
     def get_actor_output(
@@ -454,6 +483,7 @@ def construct_model(
     use_decode_obs: bool,
     use_eo: bool = False,
     use_mt: bool = False,
+    share_conjunction_with_critic: bool = False,
 ) -> BlackjackBaseAgent:
     if not use_ndnf:
         return BlackjackMLPAgent(num_latent, use_decode_obs)
@@ -463,10 +493,16 @@ def construct_model(
     ), "EO constraint and Mutex Tanh mode should not be active together."
 
     if not use_eo and not use_mt:
-        return BlackjackNDNFAgent(num_latent, use_decode_obs)
+        return BlackjackNDNFAgent(
+            num_latent, use_decode_obs, share_conjunction_with_critic
+        )
     if use_eo and not use_mt:
-        return BlackjackNDNFEOAgent(num_latent, use_decode_obs)
-    return BlackjackNDNFMutexTanhAgent(num_latent, use_decode_obs)
+        return BlackjackNDNFEOAgent(
+            num_latent, use_decode_obs, share_conjunction_with_critic
+        )
+    return BlackjackNDNFMutexTanhAgent(
+        num_latent, use_decode_obs, share_conjunction_with_critic
+    )
 
 
 # =============================================================================#

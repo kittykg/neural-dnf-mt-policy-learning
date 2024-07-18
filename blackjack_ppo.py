@@ -7,28 +7,21 @@ from typing import Any
 
 
 import gymnasium as gym
-from gymnasium.envs.toy_text.blackjack import BlackjackEnv
-from gymnasium.wrappers.record_video import RecordVideo
-from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
 import hydra
 from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
 import torch
-from torch import Tensor, nn, optim
-from torch.distributions.categorical import Categorical
+from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter  # type: ignore
 import wandb
 
 
-from neural_dnf import NeuralDNF, NeuralDNFEO, NeuralDNFMutexTanh
-from neural_dnf.neural_dnf import BaseNeuralDNF  # for type hinting
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
 
 from blackjack_common import *
-from common import init_params, DiversityScoreTracker
+from common import DiversityScoreTracker
 from utils import post_to_discord_webhook
 
 
@@ -38,490 +31,6 @@ if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
 
 DEFAULT_TARGET_STATE = (16, 5, 1)
 log = logging.getLogger()
-
-
-class BlackjackPPOBaseAgent(nn.Module):
-    """
-    To create a base agent, pass in the following parameters:
-    - num_latent (int): the number of latent features
-    - use_decode_obs (bool): flag to use decode observation
-
-    The actor and critic networks are created using `_create_default_actor()`
-    and `_create_default_critic()` methods respectively.
-    """
-
-    # Model components
-    actor: nn.Module
-    critic: nn.Module
-
-    # Actor parameters
-    num_inputs: int
-    num_latent: int
-    action_size: int = N_ACTIONS
-
-    # Flag to use decode observation
-    use_decode_obs: bool
-    input_key: str
-
-    def __init__(
-        self,
-        num_latent: int,
-        use_decode_obs: bool,
-    ) -> None:
-        super().__init__()
-
-        self.use_decode_obs = use_decode_obs
-        if self.use_decode_obs:
-            self.input_key = "decode_input"
-        else:
-            self.input_key = "input"
-        self.num_inputs = (
-            N_OBSERVATION_DECODE_SIZE if use_decode_obs else N_OBSERVATION_SIZE
-        )
-        self.num_latent = num_latent
-
-        self.actor = self._create_default_actor()
-        self.critic = self._create_default_critic()
-
-        self._init_params()
-
-    def get_value(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
-        """
-        Return the value of the state.
-        This function is used in PPO algorithm
-        """
-        return self.critic(preprocessed_obs[self.input_key])
-
-    def get_action_and_value(
-        self, preprocessed_obs: dict[str, Tensor], action=None
-    ) -> tuple[Tensor, Any, Any, Tensor]:
-        """
-        Return the action, log probability of the action, entropy of the action
-        distribution, and the value of the state.
-        This function is used in PPO algorithm
-        """
-        x = preprocessed_obs[self.input_key]
-        logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
-
-        if action is None:
-            action = dist.sample()
-
-        return (
-            action,
-            dist.log_prob(action),
-            dist.entropy(),
-            self.critic(x),
-        )
-
-    def get_actions(
-        self, preprocessed_obs: dict[str, Tensor], use_argmax: bool = True
-    ) -> npt.NDArray:
-        """
-        Return the actions based on the observation.
-        """
-        x = preprocessed_obs[self.input_key]
-        logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
-
-        actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
-        return actions.cpu().numpy()
-
-    def get_action_distribution(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> Categorical:
-        """
-        Return the action distribution based on the observation.
-        """
-        x = preprocessed_obs[self.input_key]
-        logits = self.actor(x)
-        return torch.distributions.Categorical(logits=logits)
-
-    def _create_default_actor(self) -> nn.Module:
-        if self.use_decode_obs:
-            return nn.Sequential(
-                nn.Linear(N_OBSERVATION_DECODE_SIZE, self.num_latent),
-                nn.Tanh(),
-                nn.Linear(self.num_latent, self.action_size),
-            )
-
-        return nn.Sequential(
-            nn.Linear(N_OBSERVATION_SIZE, 64),
-            nn.Tanh(),
-            nn.Linear(64, self.num_latent),
-            nn.Tanh(),
-            nn.Linear(self.num_latent, self.action_size),
-        )
-
-    def _create_default_critic(self) -> nn.Module:
-        if self.use_decode_obs:
-            return nn.Sequential(
-                nn.Linear(self.num_inputs, 64), nn.Tanh(), nn.Linear(64, 1)
-            )
-
-        return nn.Sequential(
-            nn.Linear(N_OBSERVATION_SIZE, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-        )
-
-    def _init_params(self) -> None:
-        self.apply(init_params)
-
-
-class BlackjackPPOMLPAgent(BlackjackPPOBaseAgent):
-    """
-    An agent for gymnasium Blackjack environment, with a 2-layer MLP actor.
-    To create a `BlackjackPPOMLP` agent, pass in the following parameters:
-    - num_latent (int): the number of latent features
-    - use_decode_obs (bool): flag to use decode observation
-
-    The actor and critic networks are created using `_create_default_actor()`
-    and `_create_default_critic()` methods respectively.
-    """
-
-
-class BlackjackPPONDNFBasedAgent(BlackjackPPOBaseAgent):
-    """
-    Base class for agents using a neural DNF module as the actor.
-    """
-
-    actor: BaseNeuralDNF
-
-    def __init__(self, num_latent: int, use_decode_obs: bool) -> None:
-        assert (
-            use_decode_obs
-        ), "Only decoded observation is supported for NDNF-based agent for now."
-        super().__init__(num_latent, use_decode_obs)
-
-    def _create_default_actor(self) -> nn.Module:
-        # This method should be overridden by the subclass
-        raise NotImplementedError
-
-    def get_aux_loss(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> dict[str, Tensor]:
-        """
-        Return the auxiliary loss dictionary for the agent.
-        The keys are:
-        - l_disj_l1_mod: disjunction weight regularisation loss
-        - l_tanh_conj: tanh conjunction output regularisation loss
-        """
-        # Disjunction weight regularisation loss
-        p_t = torch.cat(
-            [p.view(-1) for p in self.actor.disjunctions.parameters()]
-        )
-        l_disj_l1_mod = torch.abs(p_t * (6 - torch.abs(p_t))).mean()
-
-        # Push tanhed conjunction output towards -1 and 1 only
-        x = preprocessed_obs[self.input_key]
-        tanh_conj = torch.tanh(self.actor.conjunctions(x))
-        l_tanh_conj = (1 - tanh_conj.abs()).mean()
-
-        return {
-            "l_disj_l1_mod": l_disj_l1_mod,
-            "l_tanh_conj": l_tanh_conj,
-        }
-
-    def get_actor_output(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-    ) -> Tensor:
-        """
-        Return the raw output of the actor (before tanh)
-        This function should only be called during evaluation.
-        """
-        assert (
-            not self.training
-        ), "get_actor_output() should only be called during evaluation!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-            return self.actor(x)
-
-    def get_actions(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        use_argmax: bool = True,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-        """
-        This function should only be called during evaluation.
-        Because of the use of neural DNF module, the output of the actor can be
-        treated as a symbolic output after tanh. This function returns both the
-        probabilistic/argmax based action and the tanh action.
-        """
-        assert (
-            not self.training
-        ), "get_actions() should only be called during evaluation!"
-
-        with torch.no_grad():
-            raw_actions = self.get_actor_output(preprocessed_obs)
-        dist = torch.distributions.Categorical(logits=raw_actions)
-        if use_argmax:
-            actions = dist.probs.max(1)[1]  # type: ignore
-        else:
-            actions = dist.sample()
-        tanh_action = torch.tanh(raw_actions)
-
-        return actions.cpu().numpy(), tanh_action.cpu().numpy()
-
-
-class BlackjackPPONDNFAgent(BlackjackPPONDNFBasedAgent):
-    """
-    An agent for gymnasium Blackjack environment, with `NeuralDNF` as actor.
-    This agent is not usually expected to use for training. This agent is more
-    expected to be used as a post-training evaluation agent from either a
-    trained `BlackjackPPONDNFEOAgent` or `BlackjackPPONDNFMutexTanhAgent`.
-    To create a `BlackjackPPONDNFAgent` agent, pass in the following
-    parameters:
-    - num_latent (int): the number of conjunctions allowed in NDNF
-    - use_decode_obs (bool): flag to use decode observation
-    """
-
-    actor: NeuralDNF
-
-    def _create_default_actor(self) -> nn.Module:
-        return NeuralDNF(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
-        )
-
-
-class BlackjackPPONDNFEOAgent(BlackjackPPONDNFBasedAgent):
-    """
-    An agent for gymnasium Blackjack environment, with `NeuralDNFEO` actor.
-    This agent is used for training, and to be converted to a
-    `BlackjackPPONDNFAgent` for post-training evaluation.
-    To create a `BlackjackPPONDNFEOAgent` agent, pass in the following
-    parameters:
-    - num_latent (int): the number of conjunctions allowed in NDNF-EO
-    - use_decode_obs (bool): flag to use decode observation
-    """
-
-    actor: NeuralDNFEO
-
-    def _create_default_actor(self) -> nn.Module:
-        return NeuralDNFEO(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
-        )
-
-    def to_ndnf_agent(self) -> BlackjackPPONDNFAgent:
-        """
-        Convert this agent to a BlackjackPPONDNFAgent.
-        """
-        ndnf_agent = BlackjackPPONDNFAgent(self.num_latent, self.use_decode_obs)
-        ndnf_agent.actor = self.actor.to_ndnf()
-        return ndnf_agent
-
-
-class BlackjackPPONDNFMutexTanhAgent(BlackjackPPONDNFBasedAgent):
-    """
-    An agent for gymnasium Blackjack environment, with `NeuralDNFMutexTanh`
-    actor.
-    This agent is used for training. It can be converted to a
-    `BlackjackPPONDNFAgent` for post-training evaluation, or used directly for
-    evaluation.
-    To create a `BlackjackPPONDNFMutexTanhAgent` agent, pass in the following
-    parameters:
-    - num_latent (int): the number of conjunctions allowed in the NDNF-MT
-    - use_decode_obs (bool): flag to use decode observation
-    """
-
-    actor: NeuralDNFMutexTanh
-
-    def _create_default_actor(self) -> nn.Module:
-        return NeuralDNFMutexTanh(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
-        )
-
-    def get_action_and_value(
-        self, preprocessed_obs: dict[str, Tensor], action=None
-    ) -> tuple[Tensor, Any, Any, Tensor]:
-        """
-        Return the action, log probability of the action, entropy of the action
-        distribution, and the value of the state.
-        This function is used in PPO algorithm
-        """
-        x = preprocessed_obs[self.input_key]
-        logits = self.actor(x)
-        dist = torch.distributions.Categorical(probs=(logits + 1) / 2)
-
-        if action is None:
-            action = dist.sample()
-
-        return (
-            action,
-            dist.log_prob(action),
-            dist.entropy(),
-            self.critic(x),
-        )
-
-    def get_actor_output(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        raw_output: bool = True,
-        mutex_tanh: bool = False,
-    ) -> Tensor:
-        """
-        Return the raw output of the `NeuralDNFMutexTanh` actor:
-        - `raw_output` True: return the raw logits
-        - `mutex_tanh` True: return the mutex-tanhed output
-        This function should only be called during evaluation.
-        """
-        assert raw_output or mutex_tanh, "At least one of raw_output and "
-        "mutex_tanh should be True!"
-
-        assert not (raw_output and mutex_tanh), "Only one of raw_output and "
-        "mutex_tanh can be True!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-
-        if raw_output:
-            return self.actor.get_raw_output(x)
-        return self.actor(x)
-
-    def get_actions(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        use_argmax: bool = True,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-        """
-        This function should only be called during evaluation.
-        Because of the use of neural DNF module, the output of the actor can be
-        treated as a symbolic output after tanh. This function returns both the
-        probabilistic/argmax based action and the tanh action.
-        """
-        assert (
-            not self.training
-        ), "get_actions() should only be called during evaluation!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-            act = self.actor(x)
-            dist = torch.distributions.Categorical(probs=(act + 1) / 2)
-            tanh_actions = torch.tanh(self.actor.get_raw_output(x))
-
-        actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
-        tanh_actions = torch.tanh(self.actor.get_raw_output(x))
-        return (
-            actions.detach().cpu().numpy(),
-            tanh_actions.detach().cpu().numpy(),
-        )
-
-    def get_action_distribution(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> Categorical:
-        """
-        Return the action distribution based on the observation.
-        """
-        x = preprocessed_obs[self.input_key]
-        logits = self.actor(x)
-        return Categorical(probs=(logits + 1) / 2)
-
-    def get_aux_loss(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> dict[str, Tensor]:
-        """
-        Return the auxiliary loss dictionary for the agent.
-        The keys are:
-        - l_disj_l1_mod: disjunction weight regularisation loss
-        - l_tanh_conj: tanh conjunction output regularisation loss
-        - l_mt_ce2: mutux tanh auxiliary loss
-        """
-        aux_loss_dict = super().get_aux_loss(preprocessed_obs)
-
-        x = preprocessed_obs[self.input_key]
-
-        act_out = self.actor(x)
-        tanh_out = torch.tanh(self.actor.get_raw_output(x))
-
-        p_k = (act_out + 1) / 2
-        p_k_hat = (tanh_out + 1) / 2
-        l_mt_ce2 = -torch.sum(
-            p_k * torch.log(p_k_hat + 1e-8)
-            + (1 - p_k) * torch.log(1 - p_k_hat + 1e-8)
-        )
-
-        return {
-            **aux_loss_dict,
-            "l_mt_ce2": l_mt_ce2,
-        }
-
-
-def construct_model(
-    num_latent: int,
-    use_ndnf: bool,
-    use_decode_obs: bool,
-    use_eo: bool = False,
-    use_mt: bool = False,
-) -> BlackjackPPOBaseAgent:
-    if not use_ndnf:
-        return BlackjackPPOMLPAgent(num_latent, use_decode_obs)
-
-    assert not (
-        use_eo and use_mt
-    ), "EO constraint and Mutex Tanh mode should not be active together."
-
-    if not use_eo and not use_mt:
-        return BlackjackPPONDNFAgent(num_latent, use_decode_obs)
-    if use_eo and not use_mt:
-        return BlackjackPPONDNFEOAgent(num_latent, use_decode_obs)
-    return BlackjackPPONDNFMutexTanhAgent(num_latent, use_decode_obs)
-
-
-def construct_single_environment(
-    render_mode: str | None = "rgb_array",
-) -> BlackjackEnv:
-    env = gym.make("Blackjack-v1", render_mode=render_mode)
-    return env  # type: ignore
-
-
-def make_env(seed: int, idx: int, capture_video: bool):
-    def thunk():
-        if capture_video and idx == 0:
-            env = construct_single_environment()
-            video_dir = Path("videos")
-            env = RecordVideo(env, str(video_dir.absolute()))
-        else:
-            env = construct_single_environment()
-        env = RecordEpisodeStatistics(env)
-
-        env.action_space.seed(seed)
-        return env
-
-    return thunk
-
-
-def blackjack_env_preprocess_obss(
-    obs_tuple: tuple[npt.NDArray],
-    use_ndnf: bool,
-    device: torch.device,
-    normalise: bool = False,
-) -> dict[str, Tensor]:
-    tuple_array = np.stack(obs_tuple, axis=1)
-
-    input_np_arr = np.stack([non_decode_obs(t, normalise) for t in tuple_array])
-    decode_input_nd_array = np.stack([decode_tuple_obs(t) for t in tuple_array])
-
-    if use_ndnf:
-        decode_input_nd_array = np.where(
-            decode_input_nd_array == 0, -1, decode_input_nd_array
-        )
-
-    return {
-        "input": torch.tensor(
-            input_np_arr,
-            dtype=torch.float32,
-            device=device,
-        ),
-        "decode_input": torch.tensor(
-            decode_input_nd_array,
-            dtype=torch.float32,
-            device=device,
-        ),
-    }
 
 
 def get_relevant_targets_from_target_policy(
@@ -570,7 +79,7 @@ def get_relevant_targets_from_target_policy(
 
 
 def get_agent_policy(
-    agent: BlackjackPPOBaseAgent,
+    agent: BlackjackBaseAgent,
     target_q_policy: TargetPolicyType,
     device: torch.device,
     normalise: bool = False,
@@ -580,7 +89,7 @@ def get_agent_policy(
     `target_q_policy`.
     """
     obs_dict = get_relevant_targets_from_target_policy(
-        isinstance(agent, BlackjackPPONDNFBasedAgent),
+        isinstance(agent, BlackjackNDNFBasedAgent),
         target_q_policy,
         device,
         normalise,
@@ -593,7 +102,7 @@ def get_agent_policy(
 
 
 def track_target_state_action_distribution(
-    agent: BlackjackPPOBaseAgent,
+    agent: BlackjackBaseAgent,
     device: torch.device,
     target_state: tuple[int, int, int] = DEFAULT_TARGET_STATE,
 ) -> float:
@@ -603,7 +112,7 @@ def track_target_state_action_distribution(
     input_np_arr = np.array([list(target_state)])
     decode_input_nd_array = np.stack([decode_tuple_obs(target_state)])
 
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+    if isinstance(agent, BlackjackNDNFBasedAgent):
         decode_input_nd_array = np.where(
             decode_input_nd_array == 0, -1, decode_input_nd_array
         )
@@ -628,7 +137,7 @@ def track_target_state_action_distribution(
 
 def plot_policy_grid_after_train(
     target_policy_csv_path: Path,
-    agent: BlackjackPPOBaseAgent,
+    agent: BlackjackBaseAgent,
     device: torch.device,
     model_name: str,
     use_wandb: bool,
@@ -672,7 +181,7 @@ def plot_policy_grid_after_train(
 
 def mlp_agent_cmp_target_csv(
     target_policy_csv_path: Path,
-    agent: BlackjackPPOMLPAgent,
+    agent: BlackjackMLPAgent,
     device: torch.device,
     normalise: bool = False,
 ) -> dict[str, Any]:
@@ -702,7 +211,7 @@ def mlp_agent_cmp_target_csv(
 
 def ndnf_based_agent_cmp_target_csv(
     target_policy_csv_path: Path,
-    agent: BlackjackPPONDNFBasedAgent,
+    agent: BlackjackNDNFBasedAgent,
     device: torch.device,
 ) -> dict[str, Any]:
     logs: dict[str, Any] = {
@@ -758,7 +267,7 @@ def train_ppo(
     use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, BlackjackPPOBaseAgent, dict[str, Any] | None]:
+) -> tuple[Path | None, BlackjackBaseAgent, dict[str, Any] | None]:
     use_ndnf = "ndnf" in full_experiment_name
     use_decode_obs = training_cfg["use_decode_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
@@ -833,7 +342,7 @@ def train_ppo(
 
     last_episodic_return = None
 
-    if isinstance(agent, BlackjackPPONDNFBasedAgent):
+    if isinstance(agent, BlackjackNDNFBasedAgent):
         dds_cfg = training_cfg["dds"]
         dds = DeltaDelayedExponentialDecayScheduler(
             initial_delta=dds_cfg["initial_delta"],
@@ -998,7 +507,7 @@ def train_ppo(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                if isinstance(agent, BlackjackPPONDNFBasedAgent):
+                if isinstance(agent, BlackjackNDNFBasedAgent):
                     if agent.actor.get_delta_val()[
                         0
                     ] == 1 and delta_one_count > training_cfg["aux_loss"].get(
@@ -1018,7 +527,7 @@ def train_ppo(
                         l_tanh_conj = aux_loss_dict["l_tanh_conj"]
                         loss += l_tanh_conj_lambda * l_tanh_conj
 
-                        if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+                        if isinstance(agent, BlackjackNDNFMutexTanhAgent):
                             l_mt_ce2_lambda = training_cfg["aux_loss"][
                                 "mt_ce2_lambda"
                             ]
@@ -1045,7 +554,7 @@ def train_ppo(
             np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
         )
 
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, BlackjackNDNFBasedAgent):
             delta_dict = dds.step(agent.actor)
             new_delta = delta_dict["new_delta_vals"][0]
             old_delta = delta_dict["old_delta_vals"][0]
@@ -1065,7 +574,7 @@ def train_ppo(
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
         )
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, BlackjackNDNFBasedAgent):
             if agent.actor.get_delta_val()[
                 0
             ] == 1 and delta_one_count > training_cfg["aux_loss"].get(
@@ -1078,12 +587,12 @@ def train_ppo(
                     "losses/l_tanh_conj", l_tanh_conj.item(), global_step
                 )
 
-                if isinstance(agent, BlackjackPPONDNFMutexTanhAgent):
+                if isinstance(agent, BlackjackNDNFMutexTanhAgent):
                     writer.add_scalar(
                         "losses/l_mt_ce2", l_mt_ce2.item(), global_step
                     )
 
-        if isinstance(agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(agent, BlackjackNDNFBasedAgent):
             writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
             if new_delta != old_delta:  # type: ignore
                 print(
@@ -1111,13 +620,13 @@ def train_ppo(
         assert "target_policy_csv_path" in training_cfg
         assert training_cfg["target_policy_csv_path"] is not None
 
-        if isinstance(agent, BlackjackPPONDNFEOAgent):
+        if isinstance(agent, BlackjackNDNFEOAgent):
             eval_agent = agent.to_ndnf_agent()
         else:
             eval_agent = agent
         eval_agent.eval()
 
-        if isinstance(eval_agent, BlackjackPPONDNFBasedAgent):
+        if isinstance(eval_agent, BlackjackNDNFBasedAgent):
             eval_log = ndnf_based_agent_cmp_target_csv(
                 training_cfg["target_policy_csv_path"], eval_agent, device
             )

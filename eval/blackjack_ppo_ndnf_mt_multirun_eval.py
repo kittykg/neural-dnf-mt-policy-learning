@@ -38,17 +38,15 @@ from neural_dnf.post_training import (
 
 from blackjack_common import (
     decode_tuple_obs,
+    construct_model,
+    construct_single_environment,
     get_target_policy,
     create_policy_plots_from_asp,
     create_policy_plots_from_action_distribution,
     TargetPolicyType,
+    BlackjackNDNFMutexTanhAgent,
 )
-from blackjack_ppo import (
-    construct_model,
-    construct_single_environment,
-    get_agent_policy,
-    BlackjackPPONDNFMutexTanhAgent,
-)
+from blackjack_ppo import get_agent_policy
 from eval.common import ToyTextEnvFailureCode
 from utils import post_to_discord_webhook
 
@@ -62,7 +60,7 @@ single_env = construct_single_environment()
 
 
 def get_ndnf_action(
-    model: BlackjackPPONDNFMutexTanhAgent,
+    model: BlackjackNDNFMutexTanhAgent,
     obs: dict[str, Tensor],
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
     # Use normal tanh interpretation
@@ -75,7 +73,7 @@ def get_ndnf_action(
 
 
 def simulate_fn(
-    model: BlackjackPPONDNFMutexTanhAgent,
+    model: BlackjackNDNFMutexTanhAgent,
     target_policy: TargetPolicyType,
 ) -> dict[str, Any]:
     logs: dict[str, Any] = {
@@ -116,7 +114,7 @@ def simulate_fn(
 
 
 def post_training(
-    model: BlackjackPPONDNFMutexTanhAgent,
+    model: BlackjackNDNFMutexTanhAgent,
     target_policy: TargetPolicyType,
     eval_cfg: DictConfig,
     model_dir: Path,
@@ -558,7 +556,7 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
-        model: BlackjackPPONDNFMutexTanhAgent = construct_model(
+        model: BlackjackNDNFMutexTanhAgent = construct_model(
             num_latent=eval_cfg["model_latent_size"],
             use_ndnf=use_ndnf,
             use_decode_obs=True,

@@ -47,28 +47,70 @@ class DiversityScoreTracker:
                 self.actions_count_dict[a] = 0
             self.actions_count_dict[a] += 1
 
-    def compute_diversity_score(self) -> float:
-        """
-        Compute the diversity score for the agent.
-
-        The diversity score is defined as the sum of the difference between the
-        action proportion and the uniform distribution.
-        """
-        action_proportion = self.compute_action_proportion()
-        uniform_distribution = 1 / len(action_proportion)
-        return sum(
-            abs(p - uniform_distribution) for p in action_proportion.values()
-        )
-
-    def compute_entropy(self) -> float:
-        action_proportion = self.compute_action_proportion()
-        return -sum(p * np.log(p) for p in action_proportion.values() if p != 0)
-
     def compute_action_proportion(self) -> dict[int, float]:
+        """
+        Compute the proportion of each action in the total actions count.
+        p_a = \\frac{\sum_{i \in S} 1[policy(i) == a]}{|S|}
+        where i[.] is the indicator function and S is the set of unique
+        observations.
+        """
         return {
             k: v / self.total_actions_count
             for k, v in self.actions_count_dict.items()
         }
+
+    def compute_diversity_score(self) -> float:
+        """
+        Compute the diversity score for the agent.
+
+        diversity_score(policy)
+        = 1 - ( ds1(policy) / (2 - 2/|A|) )
+        where ds1(policy) = \\sum_a abs(p_a - 1/|A|) and p_a is the action
+        proportion (calculate by `compute_action_proportion`)
+        """
+        # What we want for the diversity score:
+        # 1. Larger means more diverse
+        # 2. Smaller means less diverse
+        # 3. Fixed minimum of 0: when completely uniform (one action everywhere)
+        # 4. Fixed maximum of 1: for when all actions used with equal
+        # proportions over states.
+        # Optional 5. Cares less about almost perfectly diverse policies
+        # difference from perfectly diverse policy, but even slight diversity is
+        # distinct from perfectly uniform
+        # Optional 6. Simple and easy to explain
+
+        # ds1(policy) = \sum_a abs(p_a - 1/|A|)
+        # where p_a is the action proportion (calculate by
+        # `compute_action_proportion`)
+        # For a perfectly diverse policy, ds1 value is 0.
+        # ds1(perfectly diverse policy) = 0
+        # For a perfectly uniform policy with no diversity at all, ds1 value is
+        # 2 - 2/|A|.
+        # ds1(perfectly uniform policy)
+        # = (1 - 1/|A|)+ (|A| - 1) * abs(0 - 1/|A|)
+        # = 1 - 1/|A| + (|A| - 1) * (1/|A|)
+        # = 2 - 2/|A|
+        p_a = self.compute_action_proportion()
+        card_a = len(self.actions_count_dict.keys())
+        equal_appearance_p = 1 / card_a
+        ds1 = sum(abs(p - equal_appearance_p) for p in p_a.values())
+
+        # ds2(policy) = 2 - 2/|A| - ds1(policy)
+        # ds1(perfectly diverse policy) = 2 - 2/|A|
+        # ds1(perfectly uniform policy) = 0
+        ds2 = 2 - (2 / card_a) - ds1
+
+        # ds3(policy) = ds2(policy) / (2 - 2/|A|)
+        # ds3(perfectly diverse policy) = 1
+        # ds3(perfectly uniform policy) = 0
+        # This is the final diversity score.
+        ds3 = ds2 / (2 - 2 / card_a)
+
+        return ds3
+
+    def compute_entropy(self) -> float:
+        action_proportion = self.compute_action_proportion()
+        return -sum(p * np.log(p) for p in action_proportion.values() if p != 0)
 
     def reset(self) -> None:
         self.actions_count_dict = {}

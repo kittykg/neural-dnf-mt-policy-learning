@@ -301,9 +301,7 @@ def train_ppo(
     ), "only discrete action space is supported"
 
     # Set up the model
-    share_layer_with_critic = training_cfg.get(
-        "share_conjunction_with_critic", False
-    )
+    share_layer_with_critic = training_cfg.get("share_layer_with_critic", False)
 
     agent = construct_model(
         num_latent=training_cfg["model_latent_size"],

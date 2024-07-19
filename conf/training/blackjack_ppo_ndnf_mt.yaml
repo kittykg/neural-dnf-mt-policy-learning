@@ -1,15 +1,15 @@
-experiment_name: blackjack_ppo_ndnf_mt_scc_al4_3e5_no_aux
+experiment_name: blackjack_ppo_ndnf_mt_slwc_al16_3e5_aux10
 
 seed: 73
 use_cuda: False
 use_mps: False
 
 use_decode_obs: True
-model_latent_size: 4
+model_latent_size: 16
 
 use_eo: False
 use_mt: True
-share_conjunction_with_critic: True
+share_layer_with_critic: True
 
 log_interval: 100
 
@@ -17,10 +17,10 @@ plot_policy: True
 target_policy_csv_path: ??? # to be filled in
 
 aux_loss:
-  delta_one_delay: 0
-  dis_l1_mod_lambda: 0
+  delta_one_delay: 10
+  dis_l1_mod_lambda: 1e-6
   tanh_conj_lambda: 0
-  mt_ce2_lambda: 0
+  mt_ce2_lambda: 1e-3
 
 dds:
   initial_delta: 0.1

@@ -1,4 +1,4 @@
-experiment_name: blackjack_ppo_mlp_al4_3e5
+experiment_name: blackjack_ppo_mlp_scc_al4_3e5
 
 seed: 73
 use_cuda: False
@@ -7,19 +7,21 @@ use_mps: False
 use_decode_obs: True
 model_latent_size: 4
 
+share_layer_with_critic: True
+
 log_interval: 100
 
 plot_policy: True
 target_policy_csv_path: ??? # to be filled in
 
 total_timesteps: 3e5
-learning_rate: 1e-2
-num_envs: 8
-num_steps: 64
+learning_rate: 1e-3
+num_envs: 32
+num_steps: 16
 anneal_lr: True
 gamma: 0.99
 gae_lambda: 0.95
-num_minibatches: 8
+num_minibatches: 16
 update_epochs: 4
 norm_adv: True
 clip_coef: 0.3

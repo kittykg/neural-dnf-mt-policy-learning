@@ -45,18 +45,26 @@ class TaxiEnvPPOBaseAgent(nn.Module):
 
     # Model components
     actor: nn.Module
-    critic: nn.Module
+    critic: nn.Sequential
 
     # Actor parameters
     num_inputs: int
     num_latent: int
     action_size: int = N_ACTIONS
 
+    # Other parameters
+    share_layer_with_critic: bool
+
     # Flag to use decode observation
     use_decode_obs: bool
     input_key: str
 
-    def __init__(self, num_latent: int, use_decode_obs: bool):
+    def __init__(
+        self,
+        num_latent: int,
+        use_decode_obs: bool,
+        share_layer_with_critic: bool = False,
+    ):
         super().__init__()
         self.num_latent = num_latent
         self.use_decode_obs = use_decode_obs
@@ -72,6 +80,8 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         else:
             self.input_key = "input"
 
+        self.share_layer_with_critic = share_layer_with_critic
+
         self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
 
@@ -82,7 +92,19 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         Return the value of the state.
         This function is used in PPO algorithm
         """
-        return self.critic(preprocessed_obs[self.input_key])
+        if not self.share_layer_with_critic:
+            return self.critic(preprocessed_obs[self.input_key])
+
+        x = preprocessed_obs[self.input_key]
+        x = self._get_actor_first_layer_output(x)
+        return self.critic(x)
+
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
+        """
+        Return the output of the actor's first layer, if the critic and actor
+        shares the first layer.
+        """
+        raise NotImplementedError
 
     def get_action_and_value(
         self, preprocessed_obs: dict[str, Tensor], action=None
@@ -94,7 +116,7 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         """
         x = preprocessed_obs[self.input_key]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
+        dist = Categorical(logits=logits)
 
         if action is None:
             action = dist.sample()
@@ -103,7 +125,7 @@ class TaxiEnvPPOBaseAgent(nn.Module):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(x),
+            self.get_value(preprocessed_obs),
         )
 
     def get_actions(
@@ -114,7 +136,7 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         """
         x = preprocessed_obs[self.input_key]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(logits=logits)
+        dist = Categorical(logits=logits)
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
         return actions.cpu().numpy()
@@ -127,7 +149,7 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         """
         x = preprocessed_obs[self.input_key]
         logits = self.actor(x)
-        return torch.distributions.Categorical(logits=logits)
+        return Categorical(logits=logits)
 
     def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
@@ -136,21 +158,19 @@ class TaxiEnvPPOBaseAgent(nn.Module):
             nn.Linear(self.num_latent, self.action_size),
         )
 
-    def _create_default_critic(self) -> nn.Module:
-        if self.use_decode_obs:
-            return nn.Sequential(
-                nn.Linear(self.num_inputs, 512),
-                nn.ReLU(),
-                nn.Linear(512, 256),
-                nn.ReLU(),
-                nn.Linear(256, 1),
-            )
-        else:
-            return nn.Sequential(
-                nn.Linear(self.num_inputs, 512),
-                nn.ReLU(),
-                nn.Linear(512, 1),
-            )
+    def _create_default_critic(self) -> nn.Sequential:
+        input_size = (
+            self.num_inputs
+            if not self.share_layer_with_critic
+            else self.num_latent
+        )
+        return nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+        )
 
     def _init_params(self) -> None:
         self.apply(init_params)
@@ -167,6 +187,15 @@ class TaxiEnvPPOMLPAgent(TaxiEnvPPOBaseAgent):
     and `_create_default_critic()` methods respectively.
     """
 
+    actor: nn.Sequential
+
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
+        """
+        Return the value of the state.
+        This function is used in PPO algorithm and A2C algorithm
+        """
+        return torch.tanh(self.actor[0](x))
+
 
 class TaxiEnvPPONDNFBasedAgent(TaxiEnvPPOBaseAgent):
     """
@@ -174,6 +203,13 @@ class TaxiEnvPPONDNFBasedAgent(TaxiEnvPPOBaseAgent):
     """
 
     actor: BaseNeuralDNF
+
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
+        """
+        Return the output of the actor's first layer, if the critic and actor
+        shares the first layer.
+        """
+        return torch.tanh(self.actor.conjunctions(x))
 
     def _create_default_actor(self) -> BaseNeuralDNF:
         # This method should be overridden by the subclass
@@ -237,7 +273,7 @@ class TaxiEnvPPONDNFBasedAgent(TaxiEnvPPOBaseAgent):
 
         with torch.no_grad():
             raw_actions = self.get_actor_output(preprocessed_obs)
-        dist = torch.distributions.Categorical(logits=raw_actions)
+        dist = Categorical(logits=raw_actions)
         if use_argmax:
             actions = dist.probs.max(1)[1]  # type: ignore
         else:
@@ -338,7 +374,7 @@ class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
         """
         x = preprocessed_obs[self.input_key]
         logits = self.actor(x)
-        dist = torch.distributions.Categorical(probs=(logits + 1) / 2)
+        dist = Categorical(probs=(logits + 1) / 2)
 
         if action is None:
             action = dist.sample()
@@ -347,7 +383,7 @@ class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
             action,
             dist.log_prob(action),
             dist.entropy(),
-            self.critic(x),
+            self.get_value(preprocessed_obs),
         )
 
     def get_actor_output(
@@ -393,7 +429,7 @@ class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
         with torch.no_grad():
             x = preprocessed_obs[self.input_key]
             act = self.actor(x)
-            dist = torch.distributions.Categorical(probs=(act + 1) / 2)
+            dist = Categorical(probs=(act + 1) / 2)
             tanh_actions = torch.tanh(self.actor.get_raw_output(x))
 
         actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
@@ -449,21 +485,30 @@ def construct_model(
     use_decode_obs: bool,
     use_eo: bool = False,
     use_mt: bool = False,
+    share_layer_with_critic: bool = False,
     pretrained_critic: dict | None = None,
 ) -> TaxiEnvPPOBaseAgent:
     if not use_ndnf:
-        return TaxiEnvPPOMLPAgent(num_latent, use_decode_obs)
+        return TaxiEnvPPOMLPAgent(
+            num_latent, use_decode_obs, share_layer_with_critic
+        )
 
     assert not (
         use_eo and use_mt
     ), "EO constraint and Mutex Tanh mode should not be active together."
 
     if not use_eo and not use_mt:
-        agent = TaxiEnvPPONDNFAgent(num_latent, use_decode_obs)
+        agent = TaxiEnvPPONDNFAgent(
+            num_latent, use_decode_obs, share_layer_with_critic
+        )
     elif use_eo and not use_mt:
-        agent = TaxiEnvPPONDNFEOAgent(num_latent, use_decode_obs)
+        agent = TaxiEnvPPONDNFEOAgent(
+            num_latent, use_decode_obs, share_layer_with_critic
+        )
     else:
-        agent = TaxiEnvPPONDNFMTAgent(num_latent, use_decode_obs)
+        agent = TaxiEnvPPONDNFMTAgent(
+            num_latent, use_decode_obs, share_layer_with_critic
+        )
 
     if pretrained_critic is not None:
         agent.load_critic_from_trained_model(
@@ -563,6 +608,9 @@ def train_ppo(
         use_decode_obs=use_decode_obs,
         use_eo="use_eo" in training_cfg and training_cfg["use_eo"],
         use_mt="use_mt" in training_cfg and training_cfg["use_mt"],
+        share_layer_with_critic=training_cfg.get(
+            "share_layer_with_critic", False
+        ),
     )
     agent.train()
     agent.to(device)

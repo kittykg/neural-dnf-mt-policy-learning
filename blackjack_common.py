@@ -507,7 +507,9 @@ def construct_model(
     share_layer_with_critic: bool = False,
 ) -> BlackjackBaseAgent:
     if not use_ndnf:
-        return BlackjackMLPAgent(num_latent, use_decode_obs)
+        return BlackjackMLPAgent(
+            num_latent, use_decode_obs, share_layer_with_critic
+        )
 
     assert not (
         use_eo and use_mt

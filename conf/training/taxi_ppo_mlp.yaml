@@ -1,4 +1,4 @@
-experiment_name: taxi_ppo_mlp_al128_1e6
+experiment_name: taxi_ppo_mlp_al128_3e6
 
 seed: 73
 use_cuda: False
@@ -7,9 +7,11 @@ use_mps: False
 use_decode_obs: False
 num_latent_size: 128
 
+share_layer_with_critic: False
+
 log_interval: 100
 
-total_timesteps: 1e6
+total_timesteps: 3e6
 learning_rate: 1e-2
 num_envs: 8
 num_steps: 128

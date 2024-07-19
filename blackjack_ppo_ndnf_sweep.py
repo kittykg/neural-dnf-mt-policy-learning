@@ -30,7 +30,7 @@ def train_ppo_wrapper(cfg: DictConfig):
 
     training_cfg = cfg["training"]
 
-    run = wandb.init(dir=HydraConfig.get().run.dir)
+    run = wandb.init(dir=HydraConfig.get().run.dir, sync_tensorboard=True)
 
     use_ndnf = "ndnf" in training_cfg["experiment_name"]
     assert use_ndnf, "Must be NDNF based experiment"

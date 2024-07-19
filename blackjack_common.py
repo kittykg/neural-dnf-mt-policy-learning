@@ -50,12 +50,15 @@ class BlackjackBaseAgent(nn.Module):
 
     # Model components
     actor: nn.Module
-    critic: nn.Module
+    critic: nn.Sequential
 
     # Actor parameters
     num_inputs: int
     num_latent: int
     action_size: int = N_ACTIONS
+
+    # Other parameters
+    share_layer_with_critic: bool
 
     # Flag to use decode observation
     use_decode_obs: bool
@@ -65,6 +68,7 @@ class BlackjackBaseAgent(nn.Module):
         self,
         num_latent: int,
         use_decode_obs: bool,
+        share_layer_with_critic: bool = False,
     ) -> None:
         super().__init__()
 
@@ -77,6 +81,7 @@ class BlackjackBaseAgent(nn.Module):
             N_OBSERVATION_DECODE_SIZE if use_decode_obs else N_OBSERVATION_SIZE
         )
         self.num_latent = num_latent
+        self.share_layer_with_critic = share_layer_with_critic
 
         self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
@@ -88,7 +93,19 @@ class BlackjackBaseAgent(nn.Module):
         Return the value of the state.
         This function is used in PPO algorithm and A2C algorithm
         """
-        return self.critic(preprocessed_obs[self.input_key])
+        if not self.share_layer_with_critic:
+            return self.critic(preprocessed_obs[self.input_key])
+
+        x = preprocessed_obs[self.input_key]
+        x = self._get_actor_first_layer_output(x)
+        return self.critic(x)
+
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
+        """
+        Return the output of the actor's first layer, if the critic and actor
+        shares the first layer.
+        """
+        raise NotImplementedError
 
     def get_action_and_value(
         self, preprocessed_obs: dict[str, Tensor], action=None
@@ -143,6 +160,8 @@ class BlackjackBaseAgent(nn.Module):
                 nn.Linear(self.num_latent, self.action_size),
             )
 
+        # If not using decode observation
+        # This is only used in BlackjackMLPAgent's actor
         return nn.Sequential(
             nn.Linear(N_OBSERVATION_SIZE, 64),
             nn.Tanh(),
@@ -151,14 +170,24 @@ class BlackjackBaseAgent(nn.Module):
             nn.Linear(self.num_latent, self.action_size),
         )
 
-    def _create_default_critic(self) -> nn.Module:
+    def _create_default_critic(self) -> nn.Sequential:
         if self.use_decode_obs:
+            input_size = (
+                self.num_inputs
+                if not self.share_layer_with_critic
+                else self.num_latent
+            )
             return nn.Sequential(
-                nn.Linear(self.num_inputs, 64), nn.Tanh(), nn.Linear(64, 1)
+                nn.Linear(input_size, 64), nn.Tanh(), nn.Linear(64, 1)
             )
 
+        # If not using decode observation
+        # This is only used in BlackjackMLPAgent's critic
+        input_size = (
+            N_OBSERVATION_SIZE if not self.share_layer_with_critic else 64
+        )
         return nn.Sequential(
-            nn.Linear(N_OBSERVATION_SIZE, 64),
+            nn.Linear(input_size, 64),
             nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
@@ -180,6 +209,15 @@ class BlackjackMLPAgent(BlackjackBaseAgent):
     and `_create_default_critic()` methods respectively.
     """
 
+    actor: nn.Sequential
+
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
+        """
+        Return the value of the state.
+        This function is used in PPO algorithm and A2C algorithm
+        """
+        return torch.tanh(self.actor[0](x))
+
 
 class BlackjackNDNFBasedAgent(BlackjackBaseAgent):
     """
@@ -187,45 +225,28 @@ class BlackjackNDNFBasedAgent(BlackjackBaseAgent):
     """
 
     actor: BaseNeuralDNF
-    share_conjunction_with_critic: bool
 
     def __init__(
         self,
         num_latent: int,
         use_decode_obs: bool,
-        share_conjunction_with_critic: bool = False,
+        share_layer_with_critic: bool = False,
     ) -> None:
-        self.share_conjunction_with_critic = share_conjunction_with_critic
         assert (
             use_decode_obs
         ), "Only decoded observation is supported for NDNF-based agent for now."
-        super().__init__(num_latent, use_decode_obs)
+        super().__init__(num_latent, use_decode_obs, share_layer_with_critic)
 
-    def get_value(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
+    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
         """
-        Return the value of the state.
-        This function is used in PPO algorithm and A2C algorithm
+        Return the output of the actor's first layer, if the critic and actor
+        shares the first layer.
         """
-        if not self.share_conjunction_with_critic:
-            return super().get_value(preprocessed_obs)
-
-        x = preprocessed_obs[self.input_key]
-        x = self.actor.conjunctions(x)
-        return self.critic(torch.tanh(x))
+        return torch.tanh(self.actor.conjunctions(x))
 
     def _create_default_actor(self) -> nn.Module:
         # This method should be overridden by the subclass
         raise NotImplementedError
-
-    def _create_default_critic(self) -> nn.Module:
-        input_size = (
-            self.num_inputs
-            if not self.share_conjunction_with_critic
-            else self.num_latent
-        )
-        return nn.Sequential(
-            nn.Linear(input_size, 64), nn.Tanh(), nn.Linear(64, 1)
-        )
 
     def get_aux_loss(
         self, preprocessed_obs: dict[str, Tensor]
@@ -483,7 +504,7 @@ def construct_model(
     use_decode_obs: bool,
     use_eo: bool = False,
     use_mt: bool = False,
-    share_conjunction_with_critic: bool = False,
+    share_layer_with_critic: bool = False,
 ) -> BlackjackBaseAgent:
     if not use_ndnf:
         return BlackjackMLPAgent(num_latent, use_decode_obs)
@@ -494,14 +515,14 @@ def construct_model(
 
     if not use_eo and not use_mt:
         return BlackjackNDNFAgent(
-            num_latent, use_decode_obs, share_conjunction_with_critic
+            num_latent, use_decode_obs, share_layer_with_critic
         )
     if use_eo and not use_mt:
         return BlackjackNDNFEOAgent(
-            num_latent, use_decode_obs, share_conjunction_with_critic
+            num_latent, use_decode_obs, share_layer_with_critic
         )
     return BlackjackNDNFMutexTanhAgent(
-        num_latent, use_decode_obs, share_conjunction_with_critic
+        num_latent, use_decode_obs, share_layer_with_critic
     )
 
 

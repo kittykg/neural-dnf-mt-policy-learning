@@ -32,20 +32,22 @@ class DiversityScoreTracker:
     for it.
     """
 
-    actions_count_dict: dict[int, int]
-    total_actions_count: int
+    possible_actions_count: int
+    actions_frequency_dict: dict[int, int]
+    total_instances_count: int
 
-    def __init__(self):
-        self.actions_count_dict = {}
-        self.total_actions_count = 0
+    def __init__(self, possible_actions_count: int):
+        self.possible_actions_count = possible_actions_count
+        self.actions_frequency_dict = {}
+        self.total_instances_count = 0
 
     def update(self, action: npt.NDArray) -> None:
-        self.total_actions_count += len(action)
+        self.total_instances_count += len(action)
 
         for a in action:
-            if a not in self.actions_count_dict:
-                self.actions_count_dict[a] = 0
-            self.actions_count_dict[a] += 1
+            if a not in self.actions_frequency_dict:
+                self.actions_frequency_dict[a] = 0
+            self.actions_frequency_dict[a] += 1
 
     def compute_action_proportion(self) -> dict[int, float]:
         """
@@ -55,8 +57,8 @@ class DiversityScoreTracker:
         observations.
         """
         return {
-            k: v / self.total_actions_count
-            for k, v in self.actions_count_dict.items()
+            k: v / self.total_instances_count
+            for k, v in self.actions_frequency_dict.items()
         }
 
     def compute_diversity_score(self) -> float:
@@ -91,7 +93,7 @@ class DiversityScoreTracker:
         # = 1 - 1/|A| + (|A| - 1) * (1/|A|)
         # = 2 - 2/|A|
         p_a = self.compute_action_proportion()
-        card_a = len(self.actions_count_dict.keys())
+        card_a = self.possible_actions_count
         equal_appearance_p = 1 / card_a
         ds1 = sum(abs(p - equal_appearance_p) for p in p_a.values())
 
@@ -113,5 +115,5 @@ class DiversityScoreTracker:
         return -sum(p * np.log(p) for p in action_proportion.values() if p != 0)
 
     def reset(self) -> None:
-        self.actions_count_dict = {}
-        self.total_actions_count = 0
+        self.actions_frequency_dict = {}
+        self.total_instances_count = 0

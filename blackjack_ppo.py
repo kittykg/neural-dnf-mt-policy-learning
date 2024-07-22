@@ -194,7 +194,7 @@ def mlp_agent_cmp_target_csv(
     obs_dict = ret["obs_dict"]
     target_q_actions = ret["target_q_actions"]
 
-    dst = DiversityScoreTracker()
+    dst = DiversityScoreTracker(N_ACTIONS)
     with torch.no_grad():
         actions = agent.get_actions(obs_dict)
         dst.update(actions)
@@ -225,7 +225,7 @@ def ndnf_based_agent_cmp_target_csv(
     obs_dict = ret["obs_dict"]
     target_q_actions = ret["target_q_actions"]
 
-    dst = DiversityScoreTracker()
+    dst = DiversityScoreTracker(N_ACTIONS)
     with torch.no_grad():
         actions, tanh_actions = agent.get_actions(
             preprocessed_obs=obs_dict, use_argmax=True

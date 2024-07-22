@@ -184,5 +184,5 @@ conf/webhook/webhook.yaml
 # Scripts and its outputs
 s.sh
 script/
-seeds.txt
+*seeds.txt
 wandb/

@@ -39,6 +39,9 @@ def train_ppo_wrapper(cfg: DictConfig):
 
     # Model architecture
     training_cfg["model_latent_size"] = wandb.config.model_latent_size
+    training_cfg["share_layer_with_critic"] = (
+        wandb.config.share_layer_with_critic
+    )
 
     # Override the PPO parameters
     training_cfg["learning_rate"] = wandb.config.learning_rate

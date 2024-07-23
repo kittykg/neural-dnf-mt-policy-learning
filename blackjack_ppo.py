@@ -639,7 +639,7 @@ def train_ppo(
                 training_cfg["target_policy_csv_path"],
                 eval_agent,  # type: ignore
                 device,
-                training_cfg["normalise_obs"],
+                training_cfg.get("normalise_obs", False),
             )
 
         log.info(eval_log)

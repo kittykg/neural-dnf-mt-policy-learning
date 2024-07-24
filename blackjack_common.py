@@ -654,6 +654,11 @@ def get_target_policy(csv_path: Path) -> TargetPolicyType:
     agent. The return dict is sorted by the observation tuple with the action as
     its value.
     """
+    if "snb" in csv_path.name:
+        # Load an already-argmaxed policy from Sutton and Barto's book
+        d = pd.read_csv(csv_path, index_col=[0]).to_dict()["action"]
+        return OrderedDict([(eval(k), v) for k, v in d.items()])
+
     d = pd.read_csv(csv_path, header=[0, 1, 2], dtype=float).to_dict()
     d.pop(("Unnamed: 0_level_0", "Unnamed: 0_level_1", "Unnamed: 0_level_2"))
 

@@ -7,6 +7,7 @@ import gymnasium as gym
 from gymnasium.envs.toy_text.blackjack import BlackjackEnv
 from gymnasium.wrappers.record_video import RecordVideo
 from gymnasium.wrappers.record_episode_statistics import RecordEpisodeStatistics
+import matplotlib.colors as mcolors
 from matplotlib.figure import Figure, figaspect
 from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
@@ -787,6 +788,104 @@ def _generate_policy_with_diff_support(
     return fig
 
 
+def _generate_soft_policy_comparison(
+    policy_ace: np.ndarray,
+    policy_no_ace: np.ndarray,
+    argmax_policy_ace: np.ndarray,
+    argmax_policy_no_ace: np.ndarray,
+    target_policy_ace: np.ndarray,
+    target_policy_no_ace: np.ndarray,
+    suptitle: str | None = None,
+):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figaspect(0.4))
+    if suptitle:
+        fig.suptitle(suptitle, fontsize=14)
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        "white_to_red", ["white", "red"]
+    )
+
+    def _sub_plot(
+        axis,
+        subplot_title: str,
+        subplot_policy: np.ndarray,
+        subplot_argmax_policy: np.ndarray,
+        subplot_target_policy: np.ndarray,
+    ):
+        rows, cols = subplot_policy.shape
+        for i in range(rows):
+            for j in range(cols):
+                # Check if the model's argmax action matches the target policy
+                if subplot_argmax_policy[i, j] == subplot_target_policy[i, j]:
+                    color = "green"
+                    text_color = "white"
+                else:
+                    # Calculate the difference
+                    color = cmap(
+                        abs(subplot_policy[i, j] - subplot_target_policy[i, j])
+                    )
+                    text_color = "black"
+
+                # Fill the cell with the calculated color
+                rect = plt.Rectangle(  # type: ignore
+                    [j, rows - i - 1], 1, 1, facecolor=color, edgecolor="black"  # type: ignore
+                )
+                axis.add_patch(rect)
+
+                # Add the action probability text
+                action_prob = subplot_policy[i, j]
+                axis.text(
+                    j + 0.5,
+                    rows - i - 1 + 0.5 + 0.2,
+                    f"{action_prob:.2f}",
+                    ha="center",
+                    va="center",
+                    color=text_color,
+                    fontsize=8,
+                )
+                action_txt = (
+                    "HIT" if subplot_argmax_policy[i, j] == 1 else "STICK"
+                )
+                axis.text(
+                    j + 0.5,
+                    rows - i - 1 + 0.5 - 0.2,
+                    action_txt,
+                    ha="center",
+                    va="center",
+                    color=text_color,
+                    fontsize=8,
+                )
+        # Set axis properties
+        axis.set_title(subplot_title)
+        axis.set_xlabel("Player sum")
+        axis.set_ylabel("Dealer showing")
+        axis.set_xlim(0, cols)
+        axis.set_ylim(0, rows)
+        axis.set_xticks(np.arange(0.5, cols, 1))
+        axis.set_yticks(np.arange(0.5, rows, 1))
+        axis.set_xticklabels(range(12, 22))  # type: ignore
+        axis.set_yticklabels(["A"] + list(range(2, 11)), fontsize=12)  # type: ignore
+        axis.grid(False)
+        axis.set_aspect("equal")
+
+    _sub_plot(
+        ax1,
+        "Policy with usable ace",
+        policy_ace,
+        argmax_policy_ace,
+        target_policy_ace,
+    )
+    _sub_plot(
+        ax2,
+        "Policy without usable ace",
+        policy_no_ace,
+        argmax_policy_no_ace,
+        target_policy_no_ace,
+    )
+
+    return fig
+
+
 def create_target_policy_plots(
     target_policy: TargetPolicyType, model_name: str
 ) -> Figure:
@@ -815,6 +914,21 @@ def create_policy_plots_from_action_distribution(
     )
     target_policy_ace, target_policy_no_ace = _create_grid(target_policy)
     policy_type = "Argmax Policy" if argmax else "Soft Policy (HIT)"
+
+    if not argmax and plot_diff:
+        argmax_policy_ace, argmax_policy_no_ace = _create_model_grids(
+            target_policy, model_action_distribution, True
+        )
+        return _generate_soft_policy_comparison(
+            policy_ace=policy_ace,
+            policy_no_ace=policy_no_ace,
+            argmax_policy_ace=argmax_policy_ace,
+            argmax_policy_no_ace=argmax_policy_no_ace,
+            target_policy_ace=target_policy_ace,
+            target_policy_no_ace=target_policy_no_ace,
+            suptitle=f"{policy_type} for {model_name}",
+        )
+
     return _generate_policy_with_diff_support(
         policy_ace=policy_ace,
         policy_no_ace=policy_no_ace,

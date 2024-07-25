@@ -171,10 +171,26 @@ def plot_policy_grid_after_train(
         model_name,
         argmax=False,
     )
+    plot.savefig(f"{model_name}_soft_policy.png")
+    if use_wandb:
+        wandb.log({"soft_policy": wandb.Image(f"{model_name}_soft_policy.png")})
+    plt.close()
+
+    plot = create_policy_plots_from_action_distribution(
+        target_policy,
+        action_distribution,
+        model_name,
+        argmax=False,
+        plot_diff=True,
+    )
     plot.savefig(f"{model_name}_soft_policy_cmp_q.png")
     if use_wandb:
         wandb.log(
-            {"soft_policy": wandb.Image(f"{model_name}_soft_policy_cmp_q.png")}
+            {
+                "soft_policy_cmp_q": wandb.Image(
+                    f"{model_name}_soft_policy_cmp_q.png"
+                )
+            }
         )
     plt.close()
 
@@ -648,11 +664,11 @@ def train_ppo(
             mod_logs = {}
             for k, v in eval_log.items():
                 if isinstance(v, bool):
-                    mod_logs[f"ndnf_based_agent/{k}"] = int(v)
+                    mod_logs[f"eval/{k}"] = int(v)
                 elif isinstance(v, list):
                     continue
                 else:
-                    mod_logs[f"ndnf_based_agent/{k}"] = v
+                    mod_logs[f"eval/{k}"] = v
             wandb.log(mod_logs)
 
         plot_policy_grid_after_train(

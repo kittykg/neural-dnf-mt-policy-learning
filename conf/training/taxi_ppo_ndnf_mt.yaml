@@ -1,15 +1,18 @@
-experiment_name: taxi_ppo_ndnf_mt_slwc_al512_5e6
+experiment_name: taxi_ppo_ndnf_mt_slwc_al512_c512_5e6
 
 seed: 73
 use_cuda: False
 use_mps: False
 
 use_decode_obs: False
-num_latent_size: 512
+actor_latent_size: 512
 
 use_eo: False
 use_mt: True
 share_layer_with_critic: True
+
+critic_latent_1: 512
+critic_latent_2: null
 
 log_interval: 100
 

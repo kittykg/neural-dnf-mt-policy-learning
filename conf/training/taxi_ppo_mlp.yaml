@@ -1,13 +1,16 @@
-experiment_name: taxi_ppo_mlp_al128_3e6
+experiment_name: taxi_ppo_mlp_al128_c128x512_3e6
 
 seed: 73
 use_cuda: False
 use_mps: False
 
 use_decode_obs: False
-num_latent_size: 128
+actor_latent_size: 128
 
 share_layer_with_critic: False
+
+critic_latent_1: 128
+critic_latent_2: 512
 
 log_interval: 100
 

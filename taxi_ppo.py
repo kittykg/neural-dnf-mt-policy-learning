@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import logging
 import random
 from pathlib import Path
 import time
@@ -35,6 +36,8 @@ PPO_MODEL_DIR = Path(__file__).parent / "taxi_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+log = logging.getLogger()
+
 
 class TaxiEnvPPOBaseAgent(nn.Module):
     """
@@ -44,16 +47,27 @@ class TaxiEnvPPOBaseAgent(nn.Module):
     """
 
     # Model components
-    actor: nn.Module
+    actor: nn.Module  # 2 layer MLP or NeuralDNF
     critic: nn.Sequential
 
     # Actor parameters
-    num_inputs: int
-    num_latent: int
+    # 2 layers: num_inputs x actor_latent -> actor_latent x N_ACTIONS
+    num_inputs: int  # calculated based on `use_decode_obs`
+    actor_latent_size: int
     action_size: int = N_ACTIONS
-
-    # Other parameters
     share_layer_with_critic: bool
+
+    # Critic parameters
+    # 3 layers (if not sharing with actor):
+    #   num_inputs x critic_latent_1 ->
+    #   critic_latent_1 x critic_latent_2 ->
+    #   critic_latent_2 x 1
+    # 2 layers (if sharing with actor):
+    #   num_inputs x actor_latent (from actor) ->
+    #   actor_latent x critic_latent_1 ->
+    #   critic_latent_1 x 1
+    critic_latent_1: int
+    critic_latent_2: int | None
 
     # Flag to use decode observation
     use_decode_obs: bool
@@ -61,12 +75,14 @@ class TaxiEnvPPOBaseAgent(nn.Module):
 
     def __init__(
         self,
-        num_latent: int,
         use_decode_obs: bool,
-        share_layer_with_critic: bool = False,
+        actor_latent_size: int,
+        share_layer_with_critic: bool,
+        critic_latent_1: int,
+        critic_latent_2: int | None,
     ):
         super().__init__()
-        self.num_latent = num_latent
+        self.actor_latent_size = actor_latent_size
         self.use_decode_obs = use_decode_obs
 
         self.num_inputs = (
@@ -81,6 +97,9 @@ class TaxiEnvPPOBaseAgent(nn.Module):
             self.input_key = "input"
 
         self.share_layer_with_critic = share_layer_with_critic
+
+        self.critic_latent_1 = critic_latent_1
+        self.critic_latent_2 = critic_latent_2
 
         self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
@@ -153,23 +172,27 @@ class TaxiEnvPPOBaseAgent(nn.Module):
 
     def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
-            nn.Linear(self.num_inputs, self.num_latent),
+            nn.Linear(self.num_inputs, self.actor_latent_size),
             nn.Tanh(),
-            nn.Linear(self.num_latent, self.action_size),
+            nn.Linear(self.actor_latent_size, self.action_size),
         )
 
     def _create_default_critic(self) -> nn.Sequential:
-        input_size = (
-            self.num_inputs
-            if not self.share_layer_with_critic
-            else self.num_latent
-        )
+        if not self.share_layer_with_critic:
+            assert self.critic_latent_2 is not None, "critic_latent_2 is None"
+
+            return nn.Sequential(
+                nn.Linear(self.num_inputs, self.critic_latent_1),
+                nn.ReLU(),
+                nn.Linear(self.critic_latent_1, self.critic_latent_2),
+                nn.ReLU(),
+                nn.Linear(self.critic_latent_2, 1),
+            )
+
         return nn.Sequential(
-            nn.Linear(input_size, 256),
+            nn.Linear(self.actor_latent_size, self.critic_latent_1),
             nn.ReLU(),
-            nn.Linear(256, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
+            nn.Linear(self.critic_latent_1, 1),
         )
 
     def _init_params(self) -> None:
@@ -316,7 +339,7 @@ class TaxiEnvPPONDNFAgent(TaxiEnvPPONDNFBasedAgent):
 
     def _create_default_actor(self) -> NeuralDNF:
         return NeuralDNF(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
+            self.num_inputs, self.actor_latent_size, self.action_size, 1.0
         )
 
 
@@ -334,14 +357,20 @@ class TaxiEnvPPONDNFEOAgent(TaxiEnvPPOBaseAgent):
 
     def _create_default_actor(self) -> NeuralDNFEO:
         return NeuralDNFEO(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
+            self.num_inputs, self.actor_latent_size, self.action_size, 1.0
         )
 
     def to_ndnf_agent(self) -> TaxiEnvPPONDNFAgent:
         """
         Convert this agent to a TaxiEnvPPONDNFAgent.
         """
-        ndnf_agent = TaxiEnvPPONDNFAgent(self.num_latent, self.use_decode_obs)
+        ndnf_agent = TaxiEnvPPONDNFAgent(
+            use_decode_obs=self.use_decode_obs,
+            actor_latent_size=self.actor_latent_size,
+            share_layer_with_critic=self.share_layer_with_critic,
+            critic_latent_1=self.critic_latent_1,
+            critic_latent_2=self.critic_latent_2,
+        )
         ndnf_agent.actor = self.actor.to_ndnf()
         return ndnf_agent
 
@@ -361,7 +390,7 @@ class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
 
     def _create_default_actor(self) -> NeuralDNFMutexTanh:
         return NeuralDNFMutexTanh(
-            self.num_inputs, self.num_latent, self.action_size, 1.0
+            self.num_inputs, self.actor_latent_size, self.action_size, 1.0
         )
 
     def get_action_and_value(
@@ -480,17 +509,23 @@ class TaxiEnvPPONDNFMTAgent(TaxiEnvPPONDNFBasedAgent):
 
 
 def construct_model(
-    num_latent: int,
+    actor_latent_size: int,
     use_ndnf: bool,
     use_decode_obs: bool,
     use_eo: bool = False,
     use_mt: bool = False,
     share_layer_with_critic: bool = False,
+    critic_latent_1: int = 256,
+    critic_latent_2: int | None = 64,
     pretrained_critic: dict | None = None,
 ) -> TaxiEnvPPOBaseAgent:
     if not use_ndnf:
         return TaxiEnvPPOMLPAgent(
-            num_latent, use_decode_obs, share_layer_with_critic
+            use_decode_obs=use_decode_obs,
+            actor_latent_size=actor_latent_size,
+            share_layer_with_critic=share_layer_with_critic,
+            critic_latent_1=critic_latent_1,
+            critic_latent_2=critic_latent_2,
         )
 
     assert not (
@@ -499,15 +534,27 @@ def construct_model(
 
     if not use_eo and not use_mt:
         agent = TaxiEnvPPONDNFAgent(
-            num_latent, use_decode_obs, share_layer_with_critic
+            use_decode_obs=use_decode_obs,
+            actor_latent_size=actor_latent_size,
+            share_layer_with_critic=share_layer_with_critic,
+            critic_latent_1=critic_latent_1,
+            critic_latent_2=critic_latent_2,
         )
     elif use_eo and not use_mt:
         agent = TaxiEnvPPONDNFEOAgent(
-            num_latent, use_decode_obs, share_layer_with_critic
+            use_decode_obs=use_decode_obs,
+            actor_latent_size=actor_latent_size,
+            share_layer_with_critic=share_layer_with_critic,
+            critic_latent_1=critic_latent_1,
+            critic_latent_2=critic_latent_2,
         )
     else:
         agent = TaxiEnvPPONDNFMTAgent(
-            num_latent, use_decode_obs, share_layer_with_critic
+            use_decode_obs=use_decode_obs,
+            actor_latent_size=actor_latent_size,
+            share_layer_with_critic=share_layer_with_critic,
+            critic_latent_1=critic_latent_1,
+            critic_latent_2=critic_latent_2,
         )
 
     if pretrained_critic is not None:
@@ -603,7 +650,7 @@ def train_ppo(
     ), "only discrete action space is supported"
 
     agent = construct_model(
-        num_latent=training_cfg["num_latent_size"],
+        actor_latent_size=training_cfg["actor_latent_size"],
         use_ndnf=use_ndnf,
         use_decode_obs=use_decode_obs,
         use_eo="use_eo" in training_cfg and training_cfg["use_eo"],
@@ -611,9 +658,12 @@ def train_ppo(
         share_layer_with_critic=training_cfg.get(
             "share_layer_with_critic", False
         ),
+        critic_latent_1=training_cfg.get("critic_latent_1", 256),
+        critic_latent_2=training_cfg.get("critic_latent_2", 64),
     )
     agent.train()
     agent.to(device)
+    log.info(agent)
 
     optimizer = optim.Adam(
         agent.parameters(), lr=training_cfg["learning_rate"], eps=1e-5

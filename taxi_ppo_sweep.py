@@ -35,14 +35,15 @@ def train_ppo_wrapper(cfg: DictConfig):
 
     use_ndnf = "ndnf" in training_cfg["experiment_name"]
     use_mt = "mt" in training_cfg["experiment_name"]
+    slwc = training_cfg["share_layer_with_critic"]
 
     # Model architecture
     training_cfg["actor_latent_size"] = wandb.config.actor_latent_size
-    training_cfg["share_layer_with_critic"] = (
-        wandb.config.share_layer_with_critic
-    )
     training_cfg["critic_latent_1"] = wandb.config.critic_latent_1
-    training_cfg["critic_latent_2"] = wandb.config.critic_latent_2
+    if not slwc:
+        training_cfg["critic_latent_2"] = wandb.config.critic_latent_2
+    else:
+        training_cfg["critic_latent_2"] = None
 
     # Override the PPO parameters
     training_cfg["learning_rate"] = wandb.config.learning_rate
@@ -50,6 +51,7 @@ def train_ppo_wrapper(cfg: DictConfig):
     training_cfg["num_steps"] = wandb.config.num_steps
     training_cfg["num_minibatches"] = wandb.config.num_minibatches
     training_cfg["update_epochs"] = wandb.config.update_epochs
+    training_cfg["gae_lambda"] = wandb.config.gae_lambda
     training_cfg["clip_coef"] = wandb.config.clip_coef
     training_cfg["vf_coef"] = wandb.config.vf_coef
     training_cfg["ent_coef"] = wandb.config.ent_coef

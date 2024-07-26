@@ -569,8 +569,9 @@ def construct_model(
 
 
 def construct_single_environment(
-    render_mode: str | None = "rgb_array",
+    render_mode: str | None = None,
 ) -> TaxiEnv:
+    # Can be set to "rgb_array"
     env = gym.make("Taxi-v3", render_mode=render_mode)
     return env  # type: ignore
 

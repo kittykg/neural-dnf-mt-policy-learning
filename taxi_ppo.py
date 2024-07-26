@@ -28,13 +28,15 @@ from neural_dnf import NeuralDNF, NeuralDNFEO, NeuralDNFMutexTanh
 from neural_dnf.neural_dnf import BaseNeuralDNF  # for type hinting
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
 
-from common import init_params
+from common import init_params, synthesize
 from taxi_common import *
 from utils import post_to_discord_webhook
 
 PPO_MODEL_DIR = Path(__file__).parent / "taxi_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+
+EVAL_NUM_RUNS = 10
 
 log = logging.getLogger()
 
@@ -149,7 +151,7 @@ class TaxiEnvPPOBaseAgent(nn.Module):
 
     def get_actions(
         self, preprocessed_obs: dict[str, Tensor], use_argmax: bool = True
-    ):
+    ) -> npt.NDArray[np.int64]:
         """
         Return the actions based on the observation.
         """
@@ -573,7 +575,7 @@ def construct_single_environment(
     return env  # type: ignore
 
 
-def make_env(seed: int, idx: int, capture_video: bool):
+def make_env(action_space_seed: int, idx: int, capture_video: bool):
     def thunk():
         if capture_video and idx == 0:
             env = construct_single_environment()
@@ -583,7 +585,7 @@ def make_env(seed: int, idx: int, capture_video: bool):
             env = construct_single_environment(None)
         env = RecordEpisodeStatistics(env)
 
-        env.action_space.seed(seed)
+        env.action_space.seed(action_space_seed)
         return env
 
     return thunk
@@ -611,13 +613,95 @@ def taxi_env_preprocess_obs(
     return {"input": input, "decode_input": decode_input}
 
 
+def eval_model_on_environment(
+    model: TaxiEnvPPOBaseAgent,
+    device: torch.device = torch.device("cpu"),
+    use_argmax: bool = True,
+    eval_num_runs: int = EVAL_NUM_RUNS,
+) -> dict[str, Any]:
+    model.to(device)
+    use_ndnf = isinstance(model, TaxiEnvPPONDNFBasedAgent)
+
+    logs: dict[str, Any] = {
+        "num_frames_per_episode": [],
+        "return_per_episode": [],
+    }
+    if use_ndnf and use_argmax:
+        logs["mutual_exclusivity"] = True
+        logs["missing_actions"] = False
+
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(i, i, False) for i in range(eval_num_runs)],
+    )
+
+    next_obs, _ = envs.reset()
+    next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
+
+    log_done_counter = 0
+    log_episode_return = torch.zeros(eval_num_runs, device=device)
+    log_episode_num_frames = torch.zeros(eval_num_runs, device=device)
+
+    while log_done_counter < eval_num_runs:
+        if use_ndnf:
+            # For NDNF based model, the get_actions() returns a tuple of
+            # actions and tanh interpretation. We check the if the tanh
+            # interpretation is greater than 0.
+            with torch.no_grad():
+                actions = model.get_actions(
+                    preprocessed_obs=next_obs_dict, use_argmax=use_argmax
+                )
+            if use_argmax:
+                tanh_action = np.count_nonzero(actions[1] > 0, axis=1)
+                if np.any(tanh_action > 1):
+                    logs["mutual_exclusivity"] = False
+                if np.any(tanh_action == 0):
+                    logs["missing_actions"] = True
+            actions = actions[0]
+        else:
+            # MLP based model
+            with torch.no_grad():
+                actions = model.get_actions(
+                    preprocessed_obs=next_obs_dict, use_argmax=use_argmax
+                )
+
+        next_obs, reward, terminations, truncations, _ = envs.step(actions)
+        next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
+        next_done = np.logical_or(terminations, truncations)
+
+        log_episode_return += torch.tensor(
+            reward, device=device, dtype=torch.float
+        )
+        log_episode_num_frames += torch.ones(eval_num_runs, device=device)
+
+        for i, done in enumerate(next_done):
+            if done:
+                log_done_counter += 1
+                logs["return_per_episode"].append(log_episode_return[i].item())
+                logs["num_frames_per_episode"].append(
+                    log_episode_num_frames[i].item()
+                )
+
+        mask = 1 - torch.tensor(next_done, device=device, dtype=torch.float)
+        log_episode_return *= mask
+        log_episode_num_frames *= mask
+
+    envs.close()
+
+    return logs
+
+
+def eval_model_on_all_possible_states():
+    # TODO: Implement this function
+    pass
+
+
 def train_ppo(
     training_cfg: DictConfig,
     full_experiment_name: str,
     use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, TaxiEnvPPOBaseAgent]:
+) -> tuple[Path | None, TaxiEnvPPOBaseAgent, dict[str, dict]]:
     use_ndnf = "ndnf" in full_experiment_name
     use_decode_obs = training_cfg["use_decode_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
@@ -949,15 +1033,51 @@ def train_ppo(
     envs.close()
     writer.close()
 
+    # Evaluate the model
+    if isinstance(agent, TaxiEnvPPONDNFEOAgent):
+        eval_agent = agent.to_ndnf_agent()
+    else:
+        eval_agent = agent
+    eval_agent.eval()
+    argmax_eval_log = eval_model_on_environment(eval_agent, use_argmax=True)
+    non_argmax_eval_log = eval_model_on_environment(
+        eval_agent, use_argmax=False
+    )
+    log.info("Argmax evaluation log:")
+    log.info(argmax_eval_log)
+    log.info("Non-argmax evaluation log:")
+    log.info(non_argmax_eval_log)
+    if use_wandb:
+
+        def modify_logs(logs: dict[str, Any], suffix: str) -> dict[str, Any]:
+            new_logs = {}
+            for k, v in logs.items():
+                if isinstance(v, bool):
+                    new_logs[f"eval_{suffix}/{k}"] = int(v)
+                elif isinstance(v, list):
+                    synth_dict = synthesize(v)
+                    new_logs[f"eval_{suffix}/{k}"] = synth_dict["mean"]
+                else:
+                    new_logs[f"eval_{suffix}/{k}"] = v
+            return new_logs
+
+        wandb.log(modify_logs(argmax_eval_log, "argmax"))
+        wandb.log(modify_logs(non_argmax_eval_log, "soft"))
+
+    return_log = {
+        "argmax_eval_log": argmax_eval_log,
+        "non_argmax_eval_log": non_argmax_eval_log,
+    }
+
     if save_model:
         model_dir = PPO_MODEL_DIR / full_experiment_name
         if not model_dir.exists() or not model_dir.is_dir():
             model_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / "model.pth"
         torch.save(agent.state_dict(), model_path)
-        return model_path, agent
+        return model_path, agent, return_log
 
-    return None, agent
+    return None, agent, return_log
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -1027,7 +1147,7 @@ def run_experiment(cfg: DictConfig):
     keyboard_interrupt = None
 
     try:
-        model_path, _ = train_ppo(
+        model_path, _, _ = train_ppo(
             training_cfg, full_experiment_name, use_wandb, writer
         )
         assert model_path is not None

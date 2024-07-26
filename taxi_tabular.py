@@ -1,12 +1,9 @@
-from collections import namedtuple, defaultdict
 import logging
 import math
 from pathlib import Path
 import random
 import traceback
 
-import gymnasium as gym
-from gymnasium.envs.toy_text.blackjack import BlackjackEnv
 import hydra
 from hydra.core.hydra_config import HydraConfig
 import matplotlib.pyplot as plt
@@ -16,23 +13,19 @@ from omegaconf import DictConfig, OmegaConf
 import pandas as pd
 import wandb
 
-from blackjack_common import get_target_policy, create_target_policy_plots
+import gymnasium as gym
+from gymnasium import Env
+from gymnasium.wrappers.record_video import RecordVideo
 from utils import post_to_discord_webhook
 
-
-Transition = namedtuple(
-    "Transition", ("state", "action", "next_state", "reward")
-)
-ObservationType = tuple[int, int, int]
-steps_done = 0
 log = logging.getLogger()
-N_ACTIONS = 2
-EVAL_ENV_SEED = 1
+EVAL_ENV_SEED = 123
 
 
 class TabularQAgent:
+    n_states: int
     n_actions: int
-    q_table: defaultdict[ObservationType, npt.NDArray[np.float64]]
+    q_table: npt.NDArray[np.float64]
 
     gamma: float
     alpha: float
@@ -48,6 +41,7 @@ class TabularQAgent:
 
     def __init__(
         self,
+        n_states: int,
         n_actions: int,
         gamma: float,
         alpha: float,
@@ -58,8 +52,9 @@ class TabularQAgent:
     ) -> None:
         super().__init__()
 
+        self.n_states = n_states
         self.n_actions = n_actions
-        self.q_table = defaultdict(lambda: np.zeros(N_ACTIONS))
+        self.q_table = np.zeros((n_states, n_actions))
 
         self.gamma = gamma
         self.alpha = alpha
@@ -73,14 +68,14 @@ class TabularQAgent:
 
         self.td_errors = []
 
-    def best_value_and_action(self, obs: ObservationType) -> tuple[float, int]:
-        action_values = self.q_table[obs]
+    def best_value_and_action(self, state: int) -> tuple[float, int]:
+        action_values = self.q_table[state, :]
         best_value = np.max(action_values)
         best_action = np.argmax(action_values)
         return best_value, best_action  # type: ignore
 
     def select_epsilon_greedy_action(
-        self, env: BlackjackEnv, obs: ObservationType
+        self, env: Env, state: int, eval: bool = False
     ) -> tuple[int, float]:
         sample = random.random()
         eps_threshold = self.eps_end + (
@@ -88,107 +83,151 @@ class TabularQAgent:
         ) * math.exp(-1.0 * self.steps_done / self.eps_decay)
         self.steps_done += 1
         action = None
-        if sample > eps_threshold:
-            action = np.argmax(self.q_table[obs])
+        if eval:
+            action = np.argmax(self.q_table[state, :])
+        elif sample > eps_threshold:
+            action = np.argmax(self.q_table[state, :])
         else:
             action = env.action_space.sample()
         return int(action), eps_threshold
 
-    def simulate_one_episode(
-        self, env: BlackjackEnv
-    ) -> tuple[float, int, float]:
+    def simulate_one_episode(self, env: Env) -> tuple[float, int, float]:
         if self.use_sarsa:
             return self._simulate_one_episode_sarsa(env)
         else:
             return self._simulate_one_episode_q_learning(env)
 
-    def _simulate_one_episode_sarsa(
-        self, env: BlackjackEnv
-    ) -> tuple[float, int, float]:
+    def _simulate_one_episode_sarsa(self, env: Env) -> tuple[float, int, float]:
         total_reward = 0
-        obs, _ = env.reset()
-        action, _ = self.select_epsilon_greedy_action(env, obs)
+        state, _ = env.reset()
+        action, _ = self.select_epsilon_greedy_action(env, state)
         terminated = False
         truncated = False
         episode_duration = 0
         eps_threshold = 0
 
         while not terminated and not truncated:
-            next_obs, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward  # type: ignore
 
             # Update Q table
             # SARSA: Q(s,a) = Q(s,a) + alpha * (r + gamma * Q(s',a') - Q(s,a))
             new_action, eps_threshold = self.select_epsilon_greedy_action(
-                env, next_obs
+                env, next_state
             )
-            new_value = reward + self.gamma * self.q_table[next_obs][new_action]
-            old_value = self.q_table[obs][action]
-            self.q_table[obs][action] = old_value + self.alpha * (
+            new_value = (
+                reward + self.gamma * self.q_table[next_state, new_action]
+            )
+            old_value = self.q_table[state, action]
+            self.q_table[state, action] = old_value + self.alpha * (
                 new_value - old_value
             )
 
             self.td_errors.append(new_value - old_value)
 
-            obs = next_obs
+            state = next_state
             action = new_action
             episode_duration += 1
 
         return total_reward, episode_duration, eps_threshold
 
     def _simulate_one_episode_q_learning(
-        self, env: BlackjackEnv
+        self, env: Env
     ) -> tuple[float, int, float]:
         total_reward = 0
-        obs, _ = env.reset()
+        state, _ = env.reset()
         terminated = False
         truncated = False
         episode_duration = 0
         eps_threshold = 0
 
         while not terminated and not truncated:
-            action, eps_threshold = self.select_epsilon_greedy_action(env, obs)
-            new_obs, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward
+            action, eps_threshold = self.select_epsilon_greedy_action(
+                env, state
+            )
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward  # type: ignore
 
             # Update Q table
             # Q learning: Q(s,a) = Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
-            best_value, _ = self.best_value_and_action(new_obs)
-            new_value = reward + self.gamma * best_value
-            old_value = self.q_table[obs][action]
-            self.q_table[obs][action] = old_value + self.alpha * (
+            best_value, _ = self.best_value_and_action(next_state)
+            new_value = reward + self.gamma * best_value  # type: ignore
+            old_value = self.q_table[state, action]
+            self.q_table[state, action] = old_value + self.alpha * (
                 new_value - old_value
             )
 
             self.td_errors.append(new_value - old_value)
 
-            obs = new_obs
+            state = next_state
             episode_duration += 1
 
         return total_reward, episode_duration, eps_threshold
 
+    def after_train_evaluate(self) -> tuple[float, float]:
+        env = gym.make("Taxi-v3", render_mode="rgb_array")
+        env = RecordVideo(env, video_folder="videos")
+
+        if self.use_sarsa:
+            total_reward, episode_duration = self._evaluate_sarsa(env)  # type: ignore
+        else:
+            total_reward, episode_duration = self._evaluate_q_learning(env)  # type: ignore
+        env.close()
+
+        return total_reward, episode_duration
+
+    def _evaluate_sarsa(
+        self, env: Env, eval_env_seed: int | None = None
+    ) -> tuple[float, int]:
+        total_reward = 0
+        state, _ = env.reset(seed=eval_env_seed)
+        action, _ = self.select_epsilon_greedy_action(env, state)
+        terminated = False
+        truncated = False
+        episode_duration = 0
+
+        while not terminated and not truncated:
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward  # type: ignore
+
+            new_action, _ = self.select_epsilon_greedy_action(
+                env, next_state, eval=True
+            )
+
+            state = next_state
+            action = new_action
+            episode_duration += 1
+
+        return total_reward, episode_duration
+
+    def _evaluate_q_learning(
+        self, env: Env, eval_env_seed: int | None = None
+    ) -> tuple[float, int]:
+        total_reward = 0
+        state, _ = env.reset(seed=eval_env_seed)
+        terminated = False
+        truncated = False
+        episode_duration = 0
+
+        while not terminated and not truncated:
+            action, _ = self.select_epsilon_greedy_action(env, state, eval=True)
+            state, reward, terminated, truncated, _ = env.step(action)
+            total_reward += reward  # type: ignore
+            episode_duration += 1
+
+        return total_reward, episode_duration
+
 
 def train(
-    env: BlackjackEnv,
+    env: Env,
     agent: TabularQAgent,
     num_episodes: int,
     use_wandb: bool,
-    full_experiment_name: str,
     logging_freq: int = 1000,
-    save_freq: int = 1000,
-    plot_policy: bool = True,
 ) -> None:
-    def get_moving_average_for_plot(
-        data: list[float], rolling_length: int = 500
-    ) -> npt.NDArray[np.float64]:
-        t = np.array(data, dtype=np.float64)
-        return (
-            np.convolve(t, np.ones(rolling_length), mode="valid")
-            / rolling_length
-        )
-
     episode_rewards = []
     episode_durations = []
+
     for i in range(1, num_episodes + 1):
         # Initialize the environment and get it's state
         (
@@ -207,57 +246,43 @@ def train(
                 f"Reward: {total_reward}\t"
                 f"Duration: {episode_duration}"
             )
-
-            if use_wandb:
-                # Plot the moving average of the rewards and durations
-                reward_moving_average = get_moving_average_for_plot(
-                    episode_rewards
-                )
-                episode_duration_moving_average = get_moving_average_for_plot(
-                    episode_durations
-                )
-                log_dict = {
-                    "episode": i,
-                    "eps_threshold": eps_threshold,
-                    "total_reward": reward_moving_average[-1],
-                    "duration": episode_duration_moving_average[-1],
-                    "td_error": get_moving_average_for_plot(agent.td_errors)[
-                        -1
-                    ],
-                }
-                wandb.log(log_dict)
-
-        if i % save_freq == 0:
-            table_name = f"{full_experiment_name}_{i}.csv"
-            df = pd.DataFrame(agent.q_table)
-            df.to_csv(table_name)
+        if use_wandb:
+            log_dict = {
+                "episode": i,
+                "eps_threshold": eps_threshold,
+                "total_reward": total_reward,
+                "duration": episode_duration,
+                "td_error": float(np.mean(agent.td_errors)),
+            }
+            wandb.log(log_dict)
 
     log.info("Training complete")
 
     log.info("Table:")
     log.info("\t" + "\t".join([str(i) for i in range(agent.n_actions)]))
-    df = pd.DataFrame(agent.q_table)
-    log.info(df)
-
-    if plot_policy:
-        plot_policy_grid_after_train(
-            Path(table_name), full_experiment_name, use_wandb
+    for i in range(agent.n_states):
+        info_str = f"S{i}\t"
+        info_str += "\t".join(
+            [f"{agent.q_table[i, j]:.2f}" for j in range(agent.n_actions)]
         )
+        log.info(f"{info_str}")
 
 
-def plot_policy_grid_after_train(
-    csv_path: Path, model_name: str, use_wandb: bool
-):
-    target_policy = get_target_policy(csv_path)
-    plot = create_target_policy_plots(target_policy, model_name)
-    plot.savefig(f"{model_name}_argmax_policy.png")
+def after_train_eval(agent: TabularQAgent, use_wandb: bool):
+    # Evaluate the agent
+    total_reward, episode_duration = agent.after_train_evaluate()
+
+    log.info(f"Evaluated agent with total reward {total_reward}")
+    log.info(f"Evaluated agent with episode duration {episode_duration}")
 
     if use_wandb:
         wandb.log(
-            {"argmax_policy": wandb.Image(f"{model_name}_argmax_policy.png")}
+            {
+                "video": wandb.Video(
+                    "videos/rl-video-episode-0.mp4", format="mp4"
+                )
+            }
         )
-
-    plt.close()
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -269,7 +294,7 @@ def run_experiment(cfg: DictConfig) -> None:
         seed = random.randint(0, 1000000)
 
     # Expect the experiment name to be in the format of
-    # blackjack_tab_..._..._..._...
+    # taxi_tab_..._..._..._...
     name_list = training_cfg["experiment_name"].split("_")
     # Insert "sarsa" or "q" after "tab"
     name_list.insert(2, "sarsa" if training_cfg["use_sarsa"] else "q")
@@ -304,9 +329,11 @@ def run_experiment(cfg: DictConfig) -> None:
             group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
-    env: BlackjackEnv = gym.make("Blackjack-v1", render_mode="rgb_array")  # type: ignore
+    env = gym.make("Taxi-v3", render_mode="ansi")
+    n_states = 500
     agent = TabularQAgent(
-        n_actions=N_ACTIONS,
+        n_states=n_states,
+        n_actions=6,
         gamma=training_cfg["gamma"],
         alpha=training_cfg["alpha"],
         eps_end=training_cfg["eps_end"],
@@ -326,17 +353,23 @@ def run_experiment(cfg: DictConfig) -> None:
             agent,
             int(training_cfg["num_episodes"]),
             use_wandb,
-            full_experiment_name,
             logging_freq=training_cfg["logging_freq"],
-            save_freq=training_cfg["save_freq"],
         )
 
-        table_name = f"{full_experiment_name}.csv"
+        after_train_eval(agent, use_wandb)
+
         df = pd.DataFrame(agent.q_table)
-        df.to_csv(table_name)
+        df.to_csv(f"{full_experiment_name}.csv", index=False)
+        np.save(f"{full_experiment_name}.npy", agent.q_table)
 
         if use_wandb:
-            wandb.save(glob_str=table_name)
+            columns = [f"S{i}" for i in range(agent.n_states)]
+            table = []
+            for j in range(agent.n_actions):
+                table.append(
+                    [agent.q_table[i, j] for i in range(agent.n_states)]
+                )
+            wandb.log({"Q-table": wandb.Table(data=table, columns=columns)})
 
         if use_discord_webhook:
             msg_body = "Success!"
@@ -363,6 +396,7 @@ def run_experiment(cfg: DictConfig) -> None:
             )
         if use_wandb:
             wandb.finish()
+        env.close()
         if not errored:
             path = Path(HydraConfig.get().run.dir)
             path.rename(path.absolute().parent / run_dir_name)

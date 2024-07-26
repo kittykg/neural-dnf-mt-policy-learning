@@ -1,0 +1,16 @@
+experiment_name: taxi_tab_1e4
+
+seed: null
+
+gamma: 0.99
+alpha: 0.2
+
+eps_start: 0.9
+eps_end: 0.05
+eps_decay: 10000
+
+num_episodes: 1e4
+
+use_sarsa: False
+
+logging_freq: 10000

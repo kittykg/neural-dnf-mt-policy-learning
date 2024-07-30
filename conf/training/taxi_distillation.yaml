@@ -1,0 +1,49 @@
+experiment_name: taxi_distillation_di_ndnf_mt_actdist_nc64_e8e3
+seed: 1024
+use_cuda: False
+use_mps: False
+
+use_decode_obs: False
+use_argmax_action: False
+
+# NDNF-based model construction
+model_type: mt
+num_conjunctions: 64
+weight_init_type: x_normal
+
+# Choose either mlp/tab for distillation
+distillation_mlp:
+  actor_latent_size: 512
+  use_ndnf: False
+  use_decode_obs: False
+  share_layer_with_critic: True
+  critic_latent_1: 512
+  critic_latent_2: null
+  mlp_model_path: null # TO BE FILLED
+distillation_tab_q:
+  tab_q_path: null # TO BE FILLED
+
+# Set a target Q-table if needed
+target_q_table_path: null # TO BE FILLED
+
+# Training dataloader
+batch_size: 32
+repeat: 1
+
+# Training hyperparameters
+epoch: 8e3
+lr: 1e-4
+
+aux_loss:
+  weight_reg_lambda: 1e-4
+  conj_reg_lambda: 1e-5 # this is used for plain NDNF and NDNF-EO
+  mt_lambda: 1e-4 # this is used for NDNF-MT
+  mt_conj_act_lambda: 1e-10 # this is used for NDNF-MT
+  # disj_act_aux_loss_lambda: 1e-4 # this is used for NDNF-MT
+  # If the model is FullMutexTanh, then add conj_act_aux_loss_lambda
+
+dds:
+  initial_delta: 0.1
+  delta_decay_delay: 1000
+  delta_decay_steps: 100
+  delta_decay_rate: 1.1

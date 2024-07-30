@@ -1,33 +1,33 @@
-experiment_name: taxi_ppo_mlp_al128_c128x512_3e6
+experiment_name: taxi_ppo_mlp_al512_slwc_cr512_3e6
 
 seed: 73
 use_cuda: False
 use_mps: False
 
 use_decode_obs: False
-actor_latent_size: 128
+actor_latent_size: 512
 
-share_layer_with_critic: False
+share_layer_with_critic: True
 
-critic_latent_1: 128
-critic_latent_2: 512
+critic_latent_1: 512
+critic_latent_2: null
 
 log_interval: 100
 
 total_timesteps: 3e6
-learning_rate: 1e-2
-num_envs: 8
-num_steps: 128
+learning_rate: 6e-4
+num_envs: 64
+num_steps: 1024
 anneal_lr: True
 gamma: 0.99
-gae_lambda: 0.95
-num_minibatches: 4
-update_epochs: 4
+gae_lambda: 0.96
+num_minibatches: 64
+update_epochs: 32
 norm_adv: True
-clip_coef: 0.3
+clip_coef: 0.2
 clip_vloss: True
-ent_coef: 0.1
-vf_coef: 1
+ent_coef: 0.08
+vf_coef: 0.85
 max_grad_norm: 0.5
 target_kl: null
 

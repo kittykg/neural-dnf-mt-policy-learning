@@ -1,5 +1,5 @@
 experiment_name: taxi_distillation_di_ndnf_mt_actdist_nc64_e8e3
-seed: 1024
+seed: null
 use_cuda: False
 use_mps: False
 

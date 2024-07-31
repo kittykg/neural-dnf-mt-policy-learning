@@ -168,7 +168,17 @@ def train_ppo(
     log.info(agent)
 
     optimizer = optim.Adam(
-        agent.parameters(), lr=training_cfg["learning_rate"], eps=1e-5
+        [
+            {
+                "params": agent.actor.parameters(),
+                "lr": training_cfg["lr_actor"],
+            },
+            {
+                "params": agent.critic.parameters(),
+                "lr": training_cfg["lr_critic"],
+            },
+        ],
+        eps=1e-5,
     )
 
     # ALGO Logic: Storage setup
@@ -211,8 +221,10 @@ def train_ppo(
         # Annealing the rate if instructed to do so.
         if training_cfg["anneal_lr"]:
             frac = 1.0 - (iteration - 1.0) / num_iterations
-            lr_now = frac * training_cfg["learning_rate"]
-            optimizer.param_groups[0]["lr"] = lr_now
+            lr_actor_now = frac * training_cfg["lr_actor"]
+            lr_critic_now = frac * training_cfg["lr_critic"]
+            optimizer.param_groups[0]["lr"] = lr_actor_now
+            optimizer.param_groups[1]["lr"] = lr_critic_now
 
         for step in range(0, num_steps):
             global_step += num_envs
@@ -407,7 +419,10 @@ def train_ppo(
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar(
-            "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
+            "charts/lr_actor", optimizer.param_groups[0]["lr"], global_step
+        )
+        writer.add_scalar(
+            "charts/lr_critic", optimizer.param_groups[1]["lr"], global_step
         )
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)  # type: ignore
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)  # type: ignore

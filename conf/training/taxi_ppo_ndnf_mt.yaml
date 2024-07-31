@@ -1,4 +1,4 @@
-experiment_name: taxi_ppo_ndnf_mt_slwc_al512_c512_5e6
+experiment_name: taxi_ppo_ndnf_mt_al512_c1024x256_5e6
 
 seed: 73
 use_cuda: False
@@ -9,10 +9,10 @@ actor_latent_size: 512
 
 use_eo: False
 use_mt: True
-share_layer_with_critic: True
+share_layer_with_critic: False
 
-critic_latent_1: 512
-critic_latent_2: null
+critic_latent_1: 1024
+critic_latent_2: 256
 
 log_interval: 100
 
@@ -32,7 +32,8 @@ aux_loss:
 #   disable_critic_training: True
 
 total_timesteps: 5e6
-learning_rate: 1e-2
+lr_actor: 1e-5
+lr_critic: 1e-4
 num_envs: 8
 num_steps: 128
 anneal_lr: True

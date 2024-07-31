@@ -15,7 +15,8 @@ critic_latent_2: null
 log_interval: 100
 
 total_timesteps: 3e6
-learning_rate: 6e-4
+lr_actor: 1e-5
+lr_critic: 1e-4
 num_envs: 64
 num_steps: 1024
 anneal_lr: True

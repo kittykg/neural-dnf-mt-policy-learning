@@ -818,7 +818,7 @@ def run_experiment(cfg: DictConfig) -> None:
         if use_discord_webhook:
             msg_body = "Success!\n"
             for k, v in eval_log.items():
-                if isinstance(v, (list, Tensor)):
+                if isinstance(v, (list, Tensor, np.ndarray)):
                     continue
                 msg_body += f"\t{k}: {v}\n"
     except BaseException as e:

@@ -128,11 +128,13 @@ def train_ppo_wrapper(cfg: DictConfig):
         wandb_log_dict["combined_metric"] = combined_metric
 
         if use_ndnf:
-            mutual_exclusivity = eval_log["mutual_exclusivity"]
+            # We only check the argmax_eval_log for mutual exclusivity and
+            # missing actions
+            mutual_exclusivity = argmax_eval_log["mutual_exclusivity"]
             wandb_log_dict["eval/mutual_exclusivity"] = int(
                 mutual_exclusivity  # type: ignore
             )
-            missing_actions = eval_log["missing_actions"]
+            missing_actions = argmax_eval_log["missing_actions"]
             wandb_log_dict["eval/missing_actions"] = int(
                 missing_actions  # type: ignore
             )

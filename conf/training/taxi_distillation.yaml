@@ -1,5 +1,5 @@
-experiment_name: taxi_distillation_di_ndnf_mt_actdist_nc64_e8e3
-seed: 1024
+experiment_name: taxi_distillation_ndnf_mt_actdist_nc64_e5e3
+seed: null
 use_cuda: False
 use_mps: False
 
@@ -23,15 +23,12 @@ distillation_mlp:
 distillation_tab_q:
   tab_q_path: null # TO BE FILLED
 
-# Set a target Q-table if needed
-target_q_table_path: null # TO BE FILLED
-
 # Training dataloader
 batch_size: 32
 repeat: 1
 
 # Training hyperparameters
-epoch: 8e3
+epoch: 5e3
 lr: 1e-4
 
 aux_loss:

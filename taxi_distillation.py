@@ -119,6 +119,14 @@ def generate_data_from_mlp(
     return preprocessed_obs, act_dist
 
 
+def load_target_q_table(tab_q_path_str: str) -> np.ndarray:
+    tab_q_path = Path(tab_q_path_str)
+    assert tab_q_path.exists(), f"Path {tab_q_path} does not exist"
+    tab_q = np.load(tab_q_path)
+
+    return tab_q[TAXI_ENV_POSSIBLE_STATES]
+
+
 def generate_data_from_tab_q(
     tab_q_path_str: str, device: torch.device
 ) -> tuple[dict[str, Tensor], Tensor]:
@@ -128,11 +136,7 @@ def generate_data_from_tab_q(
         preprocessed_obs: preprocessed observations for NDNF-based models
         q_values: Q values from the Q table
     """
-    tab_q_path = Path(tab_q_path_str)
-    assert tab_q_path.exists(), f"Path {tab_q_path} does not exist"
-
-    tab_q = np.load(tab_q_path)
-    q_values = tab_q[TAXI_ENV_POSSIBLE_STATES]
+    q_values = load_target_q_table(tab_q_path_str)
     preprocessed_obs = taxi_env_preprocess_obs(
         np.array(TAXI_ENV_POSSIBLE_STATES), use_ndnf=True, device=device
     )
@@ -320,7 +324,9 @@ def _loss_calculation_plain_and_eo(
     }
 
 
-def train(train_cfg: DictConfig, use_wandb: bool) -> BaseNeuralDNF:
+def train(
+    train_cfg: DictConfig, use_wandb: bool
+) -> tuple[BaseNeuralDNF, dict[str, Any]]:
     use_decode_obs = train_cfg["use_decode_obs"]
     use_argmax_action = train_cfg["use_argmax_action"]
     model_type_str = train_cfg["model_type"]
@@ -341,6 +347,9 @@ def train(train_cfg: DictConfig, use_wandb: bool) -> BaseNeuralDNF:
             "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
         )
 
+    target_q_table = None
+    target_action_dist = None
+
     if train_cfg["distillation_mlp"]["mlp_model_path"] is not None:
         # Pass a dummy config to load_model
         distillation_mlp_cfg: dict[str, Any] = OmegaConf.to_container(
@@ -353,15 +362,14 @@ def train(train_cfg: DictConfig, use_wandb: bool) -> BaseNeuralDNF:
             device=device,
         )
 
-        preprocessed_obs, action_dist = generate_data_from_mlp(
+        preprocessed_obs, target_action_dist = generate_data_from_mlp(
             mlp_model, device
         )
         distilled_output = (
-            action_dist.probs.max(dim=1)[1]  # type: ignore
+            target_action_dist.probs.max(dim=1)[1]  # type: ignore
             if use_argmax_action
-            else action_dist.probs
+            else target_action_dist.probs
         )
-
     else:
         assert (
             train_cfg["distillation_tab_q"]["tab_q_path"] is not None
@@ -371,8 +379,10 @@ def train(train_cfg: DictConfig, use_wandb: bool) -> BaseNeuralDNF:
             use_argmax_action
         ), "argmax action must be True when using Q table for distillation"
 
+        tab_q_path_str = train_cfg["distillation_tab_q"]["tab_q_path"]
+        target_q_table = load_target_q_table(tab_q_path_str)
         preprocessed_obs, q_values = generate_data_from_tab_q(
-            train_cfg["distillation_tab_q"]["tab_q_path"], device
+            tab_q_path_str, device
         )
         distilled_output = torch.argmax(q_values, dim=1)
 
@@ -531,7 +541,28 @@ def train(train_cfg: DictConfig, use_wandb: bool) -> BaseNeuralDNF:
 
             log.info(detailed_loss_info_str)
 
-    return ndnf_model
+    post_train_eval_log = {}
+    log1 = eval_on_environments(ndnf_model, device)
+    log2 = eval_on_all_possible_states(
+        ndnf_model, device, target_q_table, target_action_dist
+    )
+    post_train_eval_log.update(log1)
+    post_train_eval_log.update(log2)
+
+    log.info(post_train_eval_log)
+
+    if use_wandb:
+        wandb_log = {}
+        for k, v in post_train_eval_log.items():
+            if isinstance(v, bool):
+                wandb_log[f"eval/{k}"] = int(v)
+            elif isinstance(v, (list, Tensor)):
+                continue
+            else:
+                wandb_log[f"eval/{k}"] = v
+        wandb.log(wandb_log)
+
+    return ndnf_model, post_train_eval_log
 
 
 def eval_get_ndnf_action(
@@ -547,14 +578,37 @@ def eval_get_ndnf_action(
     x = preprocessed_obs[obs_key]
 
     with torch.no_grad():
-        out = ndnf_model(x)
-        action = torch.argmax(out, dim=1)
-        tanh_out = torch.tanh(out)
+        if isinstance(ndnf_model, BaseNeuralDNFMutexTanh):
+            all_form_dict = ndnf_model.get_all_forms(x)
+            action_dist = (all_form_dict["disjunction"]["mutex_tanh"] + 1) / 2
+            action = torch.argmax(action_dist, dim=1)
+            tanh_out = all_form_dict["disjunction"]["tanh"]
+        else:
+            out = ndnf_model(x)
+            action = torch.argmax(out, dim=1)
+            tanh_out = torch.tanh(out)
 
     return action, tanh_out
 
 
-def single_model_eval(
+def eval_get_ndnf_mt_action_dist(
+    ndnf_model: BaseNeuralDNFMutexTanh, obs: np.ndarray, device: torch.device
+) -> Categorical:
+    preprocessed_obs = taxi_env_preprocess_obs(
+        obs, use_ndnf=True, device=device
+    )
+    if ndnf_model.conjunctions.weights.data.shape[1] == N_OBSERVATION_SIZE:
+        obs_key = "input"
+    else:
+        obs_key = "decode_input"
+    x = preprocessed_obs[obs_key]
+
+    with torch.no_grad():
+        action_dist = (ndnf_model(x) + 1) / 2
+    return Categorical(probs=action_dist)
+
+
+def eval_on_environments(
     ndnf_model: BaseNeuralDNF,
     device: torch.device,
     num_episodes: int = 100,
@@ -572,12 +626,13 @@ def single_model_eval(
 
     plain_ndnf_model.to(device)
 
+    num_frames_per_episode = []
+    return_per_episode = []
+
     logs: dict[str, Any] = {
-        "mutual_exclusivity": True,
-        "missing_actions": False,
-        "has_truncation": False,
-        "num_frames_per_episode": [],
-        "return_per_episode": [],
+        "env_eval_mutual_exclusivity": True,
+        "env_eval_missing_actions": False,
+        "env_eval_has_truncation": False,
     }
 
     num_processes = 8
@@ -601,13 +656,13 @@ def single_model_eval(
 
         tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
         if np.any(tanh_action > 1):
-            logs["mutual_exclusivity"] = False
+            logs["env_eval_mutual_exclusivity"] = False
         if np.any(tanh_action == 0):
-            logs["missing_actions"] = True
+            logs["env_eval_missing_actions"] = True
 
         obs, reward, terminated, truncated, _ = envs.step(actions.numpy())
         if np.any(truncated):
-            logs["has_truncation"] = True
+            logs["env_eval_has_truncation"] = True
         done = tuple(a | b for a, b in zip(terminated, truncated))  # type: ignore
 
         log_episode_return += torch.tensor(
@@ -618,10 +673,8 @@ def single_model_eval(
         for i, d in enumerate(done):
             if d:
                 log_done_counter += 1
-                logs["return_per_episode"].append(log_episode_return[i].item())
-                logs["num_frames_per_episode"].append(
-                    log_episode_num_frames[i].item()
-                )
+                return_per_episode.append(log_episode_return[i].item())
+                num_frames_per_episode.append(log_episode_num_frames[i].item())
 
         mask = 1 - torch.tensor(done, device=device, dtype=torch.float)
         log_episode_return *= mask
@@ -639,6 +692,10 @@ def single_model_eval(
     logs["avg_l1_mod_aux"] = (
         torch.abs(p_t * (6 - torch.abs(p_t))).sum() / p_t.numel()
     ).item()
+    logs["env_eval_avg_return_per_episode"] = float(np.mean(return_per_episode))
+    logs["env_eval_avg_num_frames_per_episode"] = float(
+        np.mean(num_frames_per_episode)
+    )
 
     return logs
 
@@ -646,48 +703,44 @@ def single_model_eval(
 def eval_on_all_possible_states(
     ndnf_model: BaseNeuralDNF,
     device: torch.device,
-    use_argmax_action: bool,
     target_q_table: np.ndarray | None = None,
     target_action_dist: Categorical | None = None,
 ):
+    # By default, if target_q_table is provided, we prioritise using it with
+    # argmax action
+    # If target_action_dist is provided, we can choose whether compute the
+    # policy error with argmax action and compute the KL divergence between the
+    # model's action distribution and the target action distribution
     assert (
         target_q_table is not None or target_action_dist is not None
     ), "Either target_q_table or target_action_dist must be provided"
 
-    # Convert any non-plain NDNF to plain NDNF
-    if (
-        isinstance(ndnf_model, NeuralDNFEO)
-        or isinstance(ndnf_model, NeuralDNFMutexTanh)
-        or isinstance(ndnf_model, NeuralDNFFullMutexTanh)
-    ):
-        plain_ndnf_model: NeuralDNF = ndnf_model.to_ndnf()
+    # Convert NDNF-EO to plain NDNF
+    if isinstance(ndnf_model, NeuralDNFEO):
+        plain_ndnf_model = ndnf_model.to_ndnf()
     else:
-        assert isinstance(ndnf_model, NeuralDNF)
-        plain_ndnf_model: NeuralDNF = ndnf_model
+        plain_ndnf_model = ndnf_model
 
     plain_ndnf_model.to(device)
 
     logs: dict[str, Any] = {
-        "mutual_exclusivity": True,
-        "missing_actions": False,
-        "has_truncation": False,
+        "states_mutual_exclusivity": True,
+        "states_missing_actions": False,
     }
 
-    reachable_states, _ = split_all_states_to_reachable_and_non()
     with torch.no_grad():
         actions, tanh_out = eval_get_ndnf_action(
-            plain_ndnf_model, np.array(reachable_states), device
+            plain_ndnf_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
         )
     tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
     if np.any(tanh_action > 1):
-        logs["mutual_exclusivity"] = False
+        logs["states_mutual_exclusivity"] = False
     if np.any(tanh_action == 0):
-        logs["missing_actions"] = True
+        logs["states_missing_actions"] = True
 
     # Calculate the policy error
     if target_q_table is not None:
-        target_q_values = target_q_table[reachable_states]
-        target_q_argmax_actions = np.argmax(target_q_values, axis=1)
+        target_q_argmax_actions = np.argmax(target_q_table, axis=1)
         policy_error = np.where(actions.numpy() != target_q_argmax_actions)[0]
         policy_error_rate = np.count_nonzero(
             actions.numpy() != target_q_argmax_actions
@@ -701,11 +754,19 @@ def eval_on_all_possible_states(
         policy_error_rate = np.count_nonzero(
             actions.numpy() != target_action_dist_argmax
         ) / len(actions)
+        if isinstance(plain_ndnf_model, BaseNeuralDNFMutexTanh):
+            action_dist = eval_get_ndnf_mt_action_dist(
+                plain_ndnf_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
+            )
+            kl_div = F.kl_div(
+                action_dist.probs, target_action_dist.probs  # type: ignore
+            ).mean()
+            logs["kl_div"] = kl_div.item()
 
-    logs["policy_error_cmp_target_q_table"] = policy_error
-    logs["policy_error_rate_cmp_target_q_table"] = policy_error_rate
-    logs["model_actions"] = actions
-    logs["model_tanh_out"] = tanh_out
+    logs["policy_error_cmp_target"] = policy_error
+    logs["policy_error_rate_cmp_target"] = policy_error_rate
+    logs["states_model_actions"] = actions
+    logs["states_model_tanh_out"] = tanh_out
 
     return logs
 
@@ -751,42 +812,14 @@ def run_experiment(cfg: DictConfig) -> None:
     keyboard_interrupt = None
 
     try:
-        ndnf_model = train(train_cfg, use_wandb)
+        ndnf_model, eval_log = train(train_cfg, use_wandb)
         torch.save(ndnf_model.state_dict(), f"{full_experiment_name}.pt")
-
-        target_q_table: np.ndarray | None = None
-        if (
-            "target_q_table_path" in train_cfg
-            and train_cfg["target_q_table_path"] is not None
-        ):
-            target_q_table_path = train_cfg["target_q_table_path"]
-            target_q_table = np.load(target_q_table_path)
-        device = torch.device(
-            "cuda"
-            if torch.cuda.is_available() and train_cfg["use_cuda"]
-            else "cpu"
-        )
-        ret = single_model_eval(ndnf_model, device, target_q_table)
-        eval_log = dict()
-        for k, v in ret.items():
-            if isinstance(v, list):
-                eval_log[k] = float(np.array(v).mean())
-            else:
-                eval_log[k] = v
-        log.info(eval_log)
-
-        if use_wandb:
-            wandb_log = {}
-            for k, v in eval_log.items():
-                if isinstance(v, bool):
-                    wandb_log[f"eval/{k}"] = int(v)
-                else:
-                    wandb_log[f"eval/{k}"] = v
-            wandb.log(wandb_log)
 
         if use_discord_webhook:
             msg_body = "Success!\n"
             for k, v in eval_log.items():
+                if isinstance(v, (list, Tensor)):
+                    continue
                 msg_body += f"\t{k}: {v}\n"
     except BaseException as e:
         if use_discord_webhook:

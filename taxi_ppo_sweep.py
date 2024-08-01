@@ -46,7 +46,8 @@ def train_ppo_wrapper(cfg: DictConfig):
         training_cfg["critic_latent_2"] = None
 
     # Override the PPO parameters
-    training_cfg["learning_rate"] = wandb.config.learning_rate
+    training_cfg["lr_actor"] = wandb.config.lr_actor
+    training_cfg["lr_critic"] = wandb.config.lr_critic
     training_cfg["num_envs"] = wandb.config.num_envs
     training_cfg["num_steps"] = wandb.config.num_steps
     training_cfg["num_minibatches"] = wandb.config.num_minibatches
@@ -101,6 +102,8 @@ def train_ppo_wrapper(cfg: DictConfig):
             training_cfg, full_experiment_name, True, writer, save_model=True
         )
 
+        wandb_log_dict = {}
+
         # return_per_episode
         argmax_eval_log = eval_log["argmax_eval_log"]
         non_argmax_eval_log = eval_log["non_argmax_eval_log"]
@@ -108,28 +111,40 @@ def train_ppo_wrapper(cfg: DictConfig):
         argmax_return_per_episode_avg = synthesize(
             argmax_eval_log["return_per_episode"]
         )["mean"]
+        wandb_log_dict["eval/argmax_return_per_episode_avg"] = (
+            argmax_return_per_episode_avg
+        )
         non_argmax_return_per_episode_avg = synthesize(
             non_argmax_eval_log["return_per_episode"]
         )["mean"]
+        wandb_log_dict["eval/non_argmax_return_per_episode_avg"] = (
+            non_argmax_return_per_episode_avg
+        )
 
         # Aim to maximise the average return per episode
         combined_metric = (
             argmax_return_per_episode_avg + non_argmax_return_per_episode_avg
         )
+        wandb_log_dict["combined_metric"] = combined_metric
 
         if use_ndnf:
             mutual_exclusivity = eval_log["mutual_exclusivity"]
+            wandb_log_dict["eval/mutual_exclusivity"] = int(
+                mutual_exclusivity  # type: ignore
+            )
             missing_actions = eval_log["missing_actions"]
+            wandb_log_dict["eval/missing_actions"] = int(
+                missing_actions  # type: ignore
+            )
 
             if not mutual_exclusivity:
                 # Mutual exclusivity is not satisfied
                 combined_metric -= 1000
-
             if missing_actions:
                 # There are missing actions
                 combined_metric -= 1000
 
-        wandb.log({"combined_metric": combined_metric})
+        wandb.log(wandb_log_dict)
 
         if use_discord_webhook:
             msg_body = "Success!"

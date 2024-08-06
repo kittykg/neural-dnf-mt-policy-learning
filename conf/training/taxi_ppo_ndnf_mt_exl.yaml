@@ -1,0 +1,56 @@
+experiment_name: taxi_ppo_ndnf_mt_exl_a512x128_c512x256_no_aux_5e6
+
+seed: 73
+use_cuda: False
+use_mps: False
+
+use_decode_obs: False
+actor_input_size: 512
+actor_latent_size: 128
+
+use_eo: False
+use_mt: True
+share_layer_with_critic: False
+
+critic_latent_1: 512
+critic_latent_2: 256
+
+log_interval: 100
+
+dds:
+  initial_delta: 0.1
+  delta_decay_delay: 300
+  delta_decay_steps: 100
+  delta_decay_rate: 1.1
+
+aux_loss:
+  dis_l1_mod_lambda: 0
+  tanh_conj_lambda: 0
+  mt_ce2_lambda: 0
+
+# pretrained_critic:
+#   model_path: null # fill this in with the path to another model's state dict
+#   disable_critic_training: True
+
+total_timesteps: 5e6
+lr_actor: 5e-6
+lr_critic: 5e-5
+num_envs: 8
+num_steps: 1024
+anneal_lr: True
+gamma: 0.99
+gae_lambda: 0.95
+num_minibatches: 64
+update_epochs: 4
+norm_adv: True
+clip_coef: 0.3 
+clip_vloss: True
+ent_coef: 0.1
+vf_coef: 1
+max_grad_norm: 0.5
+target_kl: null
+
+# Video recording disabled for now
+# video_recording: True
+# video_recording_freq: 1000
+# video_recording_env_seed: 123

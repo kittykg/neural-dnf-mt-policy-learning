@@ -27,6 +27,7 @@ from taxi_common import (
     N_ACTIONS,
     N_DECODE_OBSERVATION_SIZE,
     N_OBSERVATION_SIZE,
+    TaxiEnvPPOMLPAgent,
     make_env,
     taxi_env_preprocess_obs,
 )
@@ -41,364 +42,19 @@ EVAL_NUM_RUNS = 10
 log = logging.getLogger()
 
 
-class TaxiEnvPPONDNFBasedExtraLayerAgent(nn.Module):
-    # Model components
-    extra_layer: nn.Module
-    actor: BaseNeuralDNF
-    critic: nn.Sequential
-
-    # Actor parameters
-    # 2 layers: num_inputs x actor_latent -> actor_latent x N_ACTIONS
-    num_inputs: int  # calculated based on `use_decode_obs`
-    actor_input_size: int
-    actor_latent_size: int
-    action_size: int = N_ACTIONS
-    share_layer_with_critic: bool
-
-    # Critic parameters
-    # 3 layers (if not sharing with actor):
-    #   num_inputs x critic_latent_1 ->
-    #   critic_latent_1 x critic_latent_2 ->
-    #   critic_latent_2 x 1
-    # 2 layers (if sharing with actor):
-    #   num_inputs x actor_latent (from actor) ->
-    #   actor_latent x critic_latent_1 ->
-    #   critic_latent_1 x 1
-    critic_latent_1: int
-    critic_latent_2: int | None
-
-    # Flag to use decode observation
-    use_decode_obs: bool
-    input_key: str
-
-    def __init__(
-        self,
-        use_decode_obs: bool,
-        actor_input_size: int,
-        actor_latent_size: int,
-        share_layer_with_critic: bool,
-        critic_latent_1: int,
-        critic_latent_2: int | None,
-    ):
-        super().__init__()
-        self.actor_input_size = actor_input_size
-        self.actor_latent_size = actor_latent_size
-        self.use_decode_obs = use_decode_obs
-
-        self.num_inputs = (
-            N_DECODE_OBSERVATION_SIZE
-            if self.use_decode_obs
-            else N_OBSERVATION_SIZE
-        )
-
-        if self.use_decode_obs:
-            self.input_key = "decode_input"
-        else:
-            self.input_key = "input"
-
-        self.share_layer_with_critic = share_layer_with_critic
-
-        self.critic_latent_1 = critic_latent_1
-        self.critic_latent_2 = critic_latent_2
-
-        self.extra_layer = nn.Sequential(
-            nn.Linear(self.num_inputs, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, self.actor_input_size),
-            nn.Tanh(),
-        )
-        self.actor = self._create_default_actor()
-        self.critic = self._create_default_critic()
-
-        self._init_params()
-
-    def get_value(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
-        """
-        Return the value of the state.
-        This function is used in PPO algorithm
-        """
-        if not self.share_layer_with_critic:
-            return self.critic(preprocessed_obs[self.input_key])
-
-        x = preprocessed_obs[self.input_key]
-        x = self._get_actor_first_layer_output(x)
-        return self.critic(x)
-
-    def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
-        """
-        Return the output of the actor's first layer, if the critic and actor
-        shares the first layer.
-        """
-        x = self.extra_layer(x)
-        return torch.tanh(self.actor.conjunctions(x))
-
-    def get_action_and_value(
-        self, preprocessed_obs: dict[str, Tensor], action=None
-    ) -> tuple[Tensor, Any, Any, Tensor]:
-        """
-        Return the action, log probability of the action, entropy of the action
-        distribution, and the value of the state.
-        This function is used in PPO algorithm
-        """
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        logits = self.actor(x)
-        dist = Categorical(logits=logits)
-
-        if action is None:
-            action = dist.sample()
-
-        return (
-            action,
-            dist.log_prob(action),
-            dist.entropy(),
-            self.get_value(preprocessed_obs),
-        )
-
-    def get_actions(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        use_argmax: bool = True,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-        """
-        This function should only be called during evaluation.
-        Because of the use of neural DNF module, the output of the actor can be
-        treated as a symbolic output after tanh. This function returns both the
-        probabilistic/argmax based action and the tanh action.
-        """
-        assert (
-            not self.training
-        ), "get_actions() should only be called during evaluation!"
-
-        with torch.no_grad():
-            raw_actions = self.get_actor_output(preprocessed_obs)
-        dist = Categorical(logits=raw_actions)
-        if use_argmax:
-            actions = dist.probs.max(1)[1]  # type: ignore
-        else:
-            actions = dist.sample()
-        tanh_action = torch.tanh(raw_actions)
-
-        return actions.cpu().numpy(), tanh_action.cpu().numpy()
-
-    def get_action_distribution(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> Categorical:
-        """
-        Return the action distribution based on the observation.
-        """
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        logits = self.actor(x)
-        return Categorical(logits=logits)
-
-    def get_aux_loss(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> dict[str, Tensor]:
-        """
-        Return the auxiliary loss dictionary for the agent.
-        The keys are:
-        - l_disj_l1_mod: disjunction weight regularisation loss
-        - l_tanh_conj: tanh conjunction output regularisation loss
-        """
-        # Disjunction weight regularisation loss
-        p_t = torch.cat(
-            [p.view(-1) for p in self.actor.disjunctions.parameters()]
-        )
-        l_disj_l1_mod = torch.abs(p_t * (6 - torch.abs(p_t))).mean()
-
-        # Push tanhed conjunction output towards -1 and 1 only
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        tanh_conj = torch.tanh(self.actor.conjunctions(x))
-        l_tanh_conj = (1 - tanh_conj.abs()).mean()
-
-        return {
-            "l_disj_l1_mod": l_disj_l1_mod,
-            "l_tanh_conj": l_tanh_conj,
-        }
-
-    def get_actor_output(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-    ) -> Tensor:
-        """
-        Return the raw output of the actor (before tanh)
-        This function should only be called during evaluation.
-        """
-        assert (
-            not self.training
-        ), "get_actor_output() should only be called during evaluation!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-            x = self.extra_layer(x)
-            return self.actor(x)
-
-    def _create_default_actor(self) -> BaseNeuralDNF:
-        # This method should be overridden by the subclass
-        raise NotImplementedError
-
-    def _create_default_critic(self) -> nn.Sequential:
-        if not self.share_layer_with_critic:
-            assert self.critic_latent_2 is not None, "critic_latent_2 is None"
-
-            return nn.Sequential(
-                nn.Linear(self.num_inputs, self.critic_latent_1),
-                nn.ReLU(),
-                nn.Linear(self.critic_latent_1, self.critic_latent_2),
-                nn.ReLU(),
-                nn.Linear(self.critic_latent_2, 1),
-            )
-
+class TaxiEnvPPOMLPNoBiasAgent(TaxiEnvPPOMLPAgent):
+    def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
-            nn.Linear(self.actor_latent_size, self.critic_latent_1),
-            nn.ReLU(),
-            nn.Linear(self.critic_latent_1, 1),
+            nn.Linear(self.num_inputs, 512, bias=True),
+            nn.Tanh(),
+            nn.Linear(512, self.actor_latent_size, bias=False),
+            nn.Tanh(),
+            nn.Linear(self.actor_latent_size, self.action_size, bias=False),
         )
-
-    def _init_params(self) -> None:
-        self.apply(init_params)
-
-
-class TaxiEnvPPONDNFExtraLayerAgent(TaxiEnvPPONDNFBasedExtraLayerAgent):
-    actor: NeuralDNF
-
-    def _create_default_actor(self) -> NeuralDNF:
-        return NeuralDNF(
-            self.actor_input_size, self.actor_latent_size, self.action_size, 1.0
-        )
-
-
-class TaxiEnvPPONDNFMTExtraLayerAgent(TaxiEnvPPONDNFBasedExtraLayerAgent):
-    actor: NeuralDNFMutexTanh
-
-    def _create_default_actor(self) -> NeuralDNFMutexTanh:
-        return NeuralDNFMutexTanh(
-            self.actor_input_size, self.actor_latent_size, self.action_size, 1.0
-        )
-
-    def get_action_and_value(
-        self, preprocessed_obs: dict[str, Tensor], action=None
-    ) -> tuple[Tensor, Any, Any, Tensor]:
-        """
-        Return the action, log probability of the action, entropy of the action
-        distribution, and the value of the state.
-        This function is used in PPO algorithm
-        """
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        logits = self.actor(x)
-        dist = Categorical(probs=(logits + 1) / 2)
-
-        if action is None:
-            action = dist.sample()
-
-        return (
-            action,
-            dist.log_prob(action),
-            dist.entropy(),
-            self.get_value(preprocessed_obs),
-        )
-
-    def get_actor_output(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        raw_output: bool = True,
-        mutex_tanh: bool = False,
-    ) -> Tensor:
-        """
-        Return the raw output of the `NeuralDNFMutexTanh` actor:
-        - `raw_output` True: return the raw logits
-        - `mutex_tanh` True: return the mutex-tanhed output
-        This function should only be called during evaluation.
-        """
-        assert raw_output or mutex_tanh, "At least one of raw_output and "
-        "mutex_tanh should be True!"
-
-        assert not (raw_output and mutex_tanh), "Only one of raw_output and "
-        "mutex_tanh can be True!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-            x = self.extra_layer(x)
-
-        if raw_output:
-            return self.actor.get_raw_output(x)
-        return self.actor(x)
-
-    def get_actions(
-        self,
-        preprocessed_obs: dict[str, Tensor],
-        use_argmax: bool = True,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-        """
-        This function should only be called during evaluation.
-        Because of the use of neural DNF module, the output of the actor can be
-        treated as a symbolic output after tanh. This function returns both the
-        probabilistic/argmax based action and the tanh action.
-        """
-        assert (
-            not self.training
-        ), "get_actions() should only be called during evaluation!"
-
-        with torch.no_grad():
-            x = preprocessed_obs[self.input_key]
-            x = self.extra_layer(x)
-            act = self.actor(x)
-            dist = Categorical(probs=(act + 1) / 2)
-            tanh_actions = torch.tanh(self.actor.get_raw_output(x))
-
-        actions = dist.probs.max(dim=1)[1] if use_argmax else dist.sample()  # type: ignore
-        tanh_actions = torch.tanh(self.actor.get_raw_output(x))
-        return (
-            actions.detach().cpu().numpy(),
-            tanh_actions.detach().cpu().numpy(),
-        )
-
-    def get_action_distribution(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> Categorical:
-        """
-        Return the action distribution based on the observation.
-        """
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        logits = self.actor(x)
-        return Categorical(probs=(logits + 1) / 2)
-
-    def get_aux_loss(
-        self, preprocessed_obs: dict[str, Tensor]
-    ) -> dict[str, Tensor]:
-        """
-        Return the auxiliary loss dictionary for the agent.
-        The keys are:
-        - l_disj_l1_mod: disjunction weight regularisation loss
-        - l_tanh_conj: tanh conjunction output regularisation loss
-        - l_mt_ce2: mutux tanh auxiliary loss
-        """
-        aux_loss_dict = super().get_aux_loss(preprocessed_obs)
-
-        x = preprocessed_obs[self.input_key]
-        x = self.extra_layer(x)
-        act_out = self.actor(x)
-        tanh_out = torch.tanh(self.actor.get_raw_output(x))
-
-        p_k = (act_out + 1) / 2
-        p_k_hat = (tanh_out + 1) / 2
-        l_mt_ce2 = -torch.sum(
-            p_k * torch.log(p_k_hat + 1e-8)
-            + (1 - p_k) * torch.log(1 - p_k_hat + 1e-8)
-        )
-
-        return {
-            **aux_loss_dict,
-            "l_mt_ce2": l_mt_ce2,
-        }
 
 
 def eval_model_on_environment(
-    model: TaxiEnvPPONDNFBasedExtraLayerAgent,
+    model: TaxiEnvPPOMLPNoBiasAgent,
     device: torch.device = torch.device("cpu"),
     use_argmax: bool = True,
     eval_num_runs: int = EVAL_NUM_RUNS,
@@ -408,8 +64,6 @@ def eval_model_on_environment(
         "num_frames_per_episode": [],
         "return_per_episode": [],
     }
-    logs["mutual_exclusivity"] = True
-    logs["missing_actions"] = False
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(i, i, False) for i in range(eval_num_runs)],
@@ -430,13 +84,6 @@ def eval_model_on_environment(
             actions = model.get_actions(
                 preprocessed_obs=next_obs_dict, use_argmax=use_argmax
             )
-        if use_argmax:
-            tanh_action = np.count_nonzero(actions[1] > 0, axis=1)
-            if np.any(tanh_action > 1):
-                logs["mutual_exclusivity"] = False
-            if np.any(tanh_action == 0):
-                logs["missing_actions"] = True
-        actions = actions[0]
 
         next_obs, reward, terminations, truncations, _ = envs.step(actions)
         next_obs_dict = taxi_env_preprocess_obs(next_obs, True, device)
@@ -464,28 +111,14 @@ def eval_model_on_environment(
     return logs
 
 
-def construct_model(
-    actor_input_size: int,
-    actor_latent_size: int,
-    use_decode_obs: bool,
-    share_layer_with_critic: bool = False,
-    critic_latent_1: int = 256,
-    critic_latent_2: int | None = 64,
-) -> TaxiEnvPPONDNFBasedExtraLayerAgent:
-
-    return TaxiEnvPPONDNFMTExtraLayerAgent(
-        use_decode_obs=use_decode_obs,
-        actor_input_size=actor_input_size,
-        actor_latent_size=actor_latent_size,
-        share_layer_with_critic=share_layer_with_critic,
-        critic_latent_1=critic_latent_1,
-        critic_latent_2=critic_latent_2,
+def construct_model() -> TaxiEnvPPOMLPNoBiasAgent:
+    return TaxiEnvPPOMLPNoBiasAgent(
+        use_decode_obs=False,
+        actor_latent_size=256,
+        share_layer_with_critic=False,
+        critic_latent_1=512,
+        critic_latent_2=256,
     )
-
-
-def eval_model_on_all_possible_states():
-    # TODO: Implement this function
-    pass
 
 
 def train_ppo(
@@ -494,7 +127,7 @@ def train_ppo(
     use_wandb: bool,
     writer: SummaryWriter,
     save_model: bool = True,
-) -> tuple[Path | None, TaxiEnvPPONDNFBasedExtraLayerAgent, dict[str, dict]]:
+) -> tuple[Path | None, TaxiEnvPPOMLPNoBiasAgent, dict[str, dict]]:
     use_ndnf = True
     use_decode_obs = training_cfg["use_decode_obs"]
     batch_size = int(training_cfg["num_envs"] * training_cfg["num_steps"])
@@ -526,16 +159,7 @@ def train_ppo(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
-    agent = construct_model(
-        actor_input_size=training_cfg["actor_input_size"],
-        actor_latent_size=training_cfg["actor_latent_size"],
-        use_decode_obs=use_decode_obs,
-        share_layer_with_critic=training_cfg.get(
-            "share_layer_with_critic", False
-        ),
-        critic_latent_1=training_cfg.get("critic_latent_1", 256),
-        critic_latent_2=training_cfg.get("critic_latent_2", 64),
-    )
+    agent = construct_model()
     agent.train()
     agent.to(device)
     log.info(agent)
@@ -578,16 +202,6 @@ def train_ppo(
     next_obs, _ = envs.reset()
     next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
     next_done = torch.zeros(num_envs).to(device)
-
-    dds_cfg = training_cfg["dds"]
-    dds = DeltaDelayedExponentialDecayScheduler(
-        initial_delta=dds_cfg["initial_delta"],
-        delta_decay_delay=dds_cfg["delta_decay_delay"],
-        delta_decay_steps=dds_cfg["delta_decay_steps"],
-        delta_decay_rate=dds_cfg["delta_decay_rate"],
-        target_module_type=agent.actor.__class__.__name__,
-    )
-    agent.actor.set_delta_val(dds_cfg["initial_delta"])
 
     for iteration in range(1, num_iterations + 1):
         # Annealing the rate if instructed to do so.
@@ -744,24 +358,6 @@ def train_ppo(
 
                 optimizer.zero_grad(set_to_none=True)
 
-                aux_loss_dict = agent.get_aux_loss(next_obs_dict)
-
-                l_disj_l1_mod_lambda = training_cfg["aux_loss"][
-                    "dis_l1_mod_lambda"
-                ]
-                l_disj_l1_mod = aux_loss_dict["l_disj_l1_mod"]
-                loss += l_disj_l1_mod_lambda * l_disj_l1_mod
-
-                l_tanh_conj_lambda = training_cfg["aux_loss"][
-                    "tanh_conj_lambda"
-                ]
-                l_tanh_conj = aux_loss_dict["l_tanh_conj"]
-                loss += l_tanh_conj_lambda * l_tanh_conj
-
-                l_mt_ce2_lambda = training_cfg["aux_loss"]["mt_ce2_lambda"]
-                l_mt_ce2 = aux_loss_dict["l_mt_ce2"]
-                loss += l_mt_ce2_lambda * l_mt_ce2
-
                 loss.backward()
                 nn.utils.clip_grad_norm_(  # type: ignore
                     agent.parameters(), training_cfg["max_grad_norm"]
@@ -779,10 +375,6 @@ def train_ppo(
         explained_var = (
             np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
         )
-
-        delta_dict = dds.step(agent.actor)
-        new_delta = delta_dict["new_delta_vals"][0]
-        old_delta = delta_dict["old_delta_vals"][0]
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar(
@@ -802,20 +394,6 @@ def train_ppo(
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
         )
-        writer.add_scalar(
-            "losses/l_disj_l1_mod", l_disj_l1_mod.item(), global_step
-        )
-        writer.add_scalar("losses/l_tanh_conj", l_tanh_conj.item(), global_step)
-
-        writer.add_scalar("losses/l_mt_ce2", l_mt_ce2.item(), global_step)
-
-        writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
-        if new_delta != old_delta:  # type: ignore
-            print(
-                f"i={iteration}\t"
-                f"old delta={old_delta:.3f} new delta={new_delta:.3f}\t"
-                f"last episodic_return={last_episodic_return}"
-            )  # type: ignore
 
         writer.add_scalar(
             "charts/SPS",

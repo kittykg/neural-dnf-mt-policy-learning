@@ -1,6 +1,6 @@
-experiment_name: taxi_ppo_ndnf_mt_exl_a512x128_c512x256_no_aux_5e6
+experiment_name: taxi_ppo_ndnf_mt_exl_no_aux_zero_delta_5e6
 
-seed: 73
+seed: null
 use_cuda: False
 use_mps: False
 
@@ -12,7 +12,7 @@ use_eo: False
 use_mt: True
 share_layer_with_critic: False
 
-critic_latent_1: 512
+critic_latent_1: 1024
 critic_latent_2: 256
 
 log_interval: 100
@@ -33,17 +33,17 @@ aux_loss:
 #   disable_critic_training: True
 
 total_timesteps: 5e6
-lr_actor: 5e-6
-lr_critic: 5e-5
+lr_actor: 1e-4
+lr_critic: 1e-3
 num_envs: 8
 num_steps: 1024
 anneal_lr: True
 gamma: 0.99
-gae_lambda: 0.95
+gae_lambda: 0.98
 num_minibatches: 64
 update_epochs: 4
 norm_adv: True
-clip_coef: 0.3 
+clip_coef: 0.3
 clip_vloss: True
 ent_coef: 0.1
 vf_coef: 1

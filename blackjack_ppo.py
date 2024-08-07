@@ -21,7 +21,11 @@ import wandb
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
 
 from blackjack_common import *
-from common import DiversityScoreTracker
+from eval.blackjack_ppo_rl_eval_common import (
+    get_agent_policy,
+    mlp_agent_cmp_target_csv,
+    ndnf_based_agent_cmp_target_csv,
+)
 from utils import post_to_discord_webhook
 
 
@@ -31,74 +35,6 @@ if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
 
 DEFAULT_TARGET_STATE = (16, 5, 1)
 log = logging.getLogger()
-
-
-def get_relevant_targets_from_target_policy(
-    use_ndnf: bool,
-    target_policy: TargetPolicyType,
-    device: torch.device,
-    normalise: bool = False,
-) -> dict[str, Any]:
-    """
-    Return the observations, preprocessed observations and target actions from a
-    target policy trained from tabular Q-learning.
-    """
-    obs_list = [obs for obs in target_policy.keys()]
-    target_q_actions = np.array([target_policy[obs] for obs in obs_list])
-
-    input_np_arr = np.stack(
-        [non_decode_obs(obs, normalise) for obs in obs_list]
-    )
-    decode_input_nd_array = np.stack(
-        [decode_tuple_obs(obs) for obs in obs_list]
-    )
-
-    if use_ndnf:
-        decode_input_nd_array = np.where(
-            decode_input_nd_array == 0, -1, decode_input_nd_array
-        )
-
-    obs_dict = {
-        "input": torch.tensor(
-            input_np_arr,
-            dtype=torch.float32,
-            device=device,
-        ),
-        "decode_input": torch.tensor(
-            decode_input_nd_array,
-            dtype=torch.float32,
-            device=device,
-        ),
-    }
-
-    return {
-        "obs_list": obs_list,
-        "obs_dict": obs_dict,
-        "target_q_actions": target_q_actions,
-    }
-
-
-def get_agent_policy(
-    agent: BlackjackBaseAgent,
-    target_q_policy: TargetPolicyType,
-    device: torch.device,
-    normalise: bool = False,
-) -> Any:
-    """
-    Return the action distribution for the agent at all states presented in
-    `target_q_policy`.
-    """
-    obs_dict = get_relevant_targets_from_target_policy(
-        isinstance(agent, BlackjackNDNFBasedAgent),
-        target_q_policy,
-        device,
-        normalise,
-    )["obs_dict"]
-
-    with torch.no_grad():
-        action_dist = agent.get_action_distribution(obs_dict)
-
-    return action_dist.probs.cpu().numpy()  # type: ignore
 
 
 def track_target_state_action_distribution(
@@ -193,89 +129,6 @@ def plot_policy_grid_after_train(
             }
         )
     plt.close()
-
-
-def mlp_agent_cmp_target_csv(
-    target_policy_csv_path: Path,
-    agent: BlackjackMLPAgent,
-    device: torch.device,
-    normalise: bool = False,
-) -> dict[str, Any]:
-    logs: dict[str, Any] = {}
-
-    target_policy = get_target_policy(target_policy_csv_path)
-    ret = get_relevant_targets_from_target_policy(
-        False, target_policy, device, normalise
-    )
-    obs_dict = ret["obs_dict"]
-    target_q_actions = ret["target_q_actions"]
-
-    dst = DiversityScoreTracker(N_ACTIONS)
-    with torch.no_grad():
-        actions = agent.get_actions(obs_dict)
-        dst.update(actions)
-
-    policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
-        target_q_actions
-    )
-    logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
-    logs["action_diversity_score"] = dst.compute_diversity_score()
-    logs["action_entropy"] = dst.compute_entropy()
-
-    return logs
-
-
-def ndnf_based_agent_cmp_target_csv(
-    target_policy_csv_path: Path,
-    agent: BlackjackNDNFBasedAgent,
-    device: torch.device,
-) -> dict[str, Any]:
-    logs: dict[str, Any] = {
-        "mutual_exclusivity": True,
-        "missing_actions": False,
-    }
-
-    target_policy = get_target_policy(target_policy_csv_path)
-    ret = get_relevant_targets_from_target_policy(True, target_policy, device)
-    obs_list = ret["obs_list"]
-    obs_dict = ret["obs_dict"]
-    target_q_actions = ret["target_q_actions"]
-
-    dst = DiversityScoreTracker(N_ACTIONS)
-    with torch.no_grad():
-        actions, tanh_actions = agent.get_actions(
-            preprocessed_obs=obs_dict, use_argmax=True
-        )
-        dst.update(actions)
-
-    tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
-    if np.any(tanh_actions_discretised > 1):
-        logs["mutual_exclusivity"] = False
-        logs["mutual_exclusivity_violations_count"] = int(
-            np.count_nonzero(tanh_actions_discretised > 1)
-        )
-        logs["mutual_exclusivity_violations_states"] = [
-            obs_list[i] for i in np.where(tanh_actions_discretised > 1)[0]
-        ]
-
-    if np.any(tanh_actions_discretised == 0):
-        logs["missing_actions"] = True
-        logs["missing_actions_count"] = int(
-            np.count_nonzero(tanh_actions_discretised == 0)
-        )
-        logs["missing_actions_states"] = [
-            obs_list[i] for i in np.where(tanh_actions_discretised == 0)[0]
-        ]
-
-    policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
-        target_q_actions
-    )
-    logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
-    logs["action_diversity_score"] = dst.compute_diversity_score()
-    logs["action_entropy"] = dst.compute_entropy()
-    log.info(dst.compute_action_proportion())
-
-    return logs
 
 
 def train_ppo(

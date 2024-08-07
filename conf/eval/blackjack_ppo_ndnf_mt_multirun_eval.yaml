@@ -1,12 +1,13 @@
-experiment_name: blackjack_ppo_ndnf_mt_al4_3e5
-multirun_seeds: [644, 2302, 3332, 3453, 4665, 5781, 5964, 6570, 7065, 7185, 7279, 7462, 7690, 7983, 9824, 9880]
+experiment_name: blackjack_ppo_ndnf_mt_al64_3e5_aux10
+multirun_seeds: [1681, 2484, 3191, 4862, 6448, 7063, 7142, 7213, 7620, 9007]
 
 use_eo: False
 use_mt: True
+share_layer_with_critic: False
 
 use_argmax_to_choose_action: True
 use_decode_obs: True
-model_latent_size: 4
+model_latent_size: 64
 target_policy_csv_path: ??? # to be filled in
 
 # For post-training cmp-q eval

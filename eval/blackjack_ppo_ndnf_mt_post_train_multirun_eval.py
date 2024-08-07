@@ -562,6 +562,7 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
             use_decode_obs=True,
             use_eo=False,
             use_mt=True,
+            share_layer_with_critic=eval_cfg["share_layer_with_critic"],
         )  # type: ignore
         model.to(DEVICE)
         model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
@@ -638,10 +639,11 @@ def run_eval(cfg: DictConfig) -> None:
             )
             msg_body += f"Average win rate: {avg_win_rate['avg_win_rate']}"
     except BaseException as e:
-        if isinstance(e, KeyboardInterrupt):
-            keyboard_interrupt = True
-        else:
-            msg_body = "Check the logs for more details."
+        if use_discord_webhook:
+            if isinstance(e, KeyboardInterrupt):
+                keyboard_interrupt = True
+            else:
+                msg_body = "Check the logs for more details."
 
         print(traceback.format_exc())
         errored = True

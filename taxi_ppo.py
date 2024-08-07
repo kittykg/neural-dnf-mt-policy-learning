@@ -26,7 +26,8 @@ PPO_MODEL_DIR = Path(__file__).parent / "taxi_ppo_storage/"
 if not PPO_MODEL_DIR.exists() or not PPO_MODEL_DIR.is_dir():
     PPO_MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-EVAL_NUM_RUNS = 10
+EVAL_NUM_ENVS = 8
+EVAL_NUM_RUNS = 50
 
 log = logging.getLogger()
 
@@ -49,15 +50,15 @@ def eval_model_on_environment(
         logs["missing_actions"] = False
 
     envs = gym.vector.SyncVectorEnv(
-        [make_env(i, i, False) for i in range(eval_num_runs)],
+        [make_env(i, i, False) for i in range(EVAL_NUM_ENVS)],
     )
 
     next_obs, _ = envs.reset()
     next_obs_dict = taxi_env_preprocess_obs(next_obs, use_ndnf, device)
 
     log_done_counter = 0
-    log_episode_return = torch.zeros(eval_num_runs, device=device)
-    log_episode_num_frames = torch.zeros(eval_num_runs, device=device)
+    log_episode_return = torch.zeros(EVAL_NUM_ENVS, device=device)
+    log_episode_num_frames = torch.zeros(EVAL_NUM_ENVS, device=device)
 
     while log_done_counter < eval_num_runs:
         if use_ndnf:
@@ -89,7 +90,7 @@ def eval_model_on_environment(
         log_episode_return += torch.tensor(
             reward, device=device, dtype=torch.float
         )
-        log_episode_num_frames += torch.ones(eval_num_runs, device=device)
+        log_episode_num_frames += torch.ones(EVAL_NUM_ENVS, device=device)
 
         for i, done in enumerate(next_done):
             if done:

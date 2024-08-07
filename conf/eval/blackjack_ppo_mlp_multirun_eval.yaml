@@ -1,0 +1,12 @@
+experiment_name: blackjack_ppo_mlp_al64_3e5
+multirun_seeds: [830, 944, 1050, 3802, 4974, 6663, 7814, 8654, 8747, 9049]
+share_layer_with_critic: False
+
+# experiment_name: blackjack_ppo_mlp_slwc_al64_3e5
+# multirun_seeds: [276, 1037, 3276, 3844, 4149, 5414, 6798, 7927, 8588, 9368]
+# share_layer_with_critic: True
+
+use_argmax_to_choose_action: True
+use_decode_obs: True
+model_latent_size: 64
+target_policy_csv_path: ??? # to be filled in

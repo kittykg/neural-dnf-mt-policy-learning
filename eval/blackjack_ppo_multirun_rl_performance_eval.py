@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import json
 import logging
 from pathlib import Path
 import random
@@ -62,9 +63,9 @@ def single_model_eval(
 
 def result_analysis(
     single_eval_results: list[OrderedDict[str, float]],
-) -> dict[str, Any]:
+) -> dict[str, float]:
     np.set_printoptions(formatter={"float": lambda x: "{:.3f}".format(x)})
-    aggregated_log: dict[str, Any] = dict()
+    aggregated_log: dict[str, float] = dict()
 
     num_models = len(single_eval_results)
     all_runs_return = np.array(
@@ -79,6 +80,7 @@ def result_analysis(
     all_runs_action_entropy = np.array(
         [d["action_entropy"] for d in single_eval_results]
     )
+    all_runs_win_rate = np.array([d["win_rate"] for d in single_eval_results])
 
     def compute_mean_std_ste(arr: np.ndarray) -> tuple[float, float, float]:
         avg = float(np.mean(arr))
@@ -91,6 +93,7 @@ def result_analysis(
     log.info(f"Avg. return per episode of all runs: {avg_return:.3f}")
     log.info(f"Std. return per episode of all runs: {std_return:.3f}")
     log.info(f"Ste. return per episode of all runs: {ste_return:.3f}")
+    log.info("=====================================")
 
     aggregated_log["avg_return_per_episode"] = avg_return
     aggregated_log["std_return_per_episode"] = std_return
@@ -111,6 +114,7 @@ def result_analysis(
     log.info(
         f"Ste. policy error compared to target Q of all runs: {ste_policy_error_cmp_to_q:.3f}"
     )
+    log.info("=====================================")
 
     aggregated_log["avg_policy_error_cmp_to_q"] = avg_policy_error_cmp_to_q
     aggregated_log["std_policy_error_cmp_to_q"] = std_policy_error_cmp_to_q
@@ -131,6 +135,7 @@ def result_analysis(
     log.info(
         f"Ste. action diversity score of all runs: {ste_action_diversity_score:.3f}"
     )
+    log.info("=====================================")
 
     aggregated_log["avg_action_diversity_score"] = avg_action_diversity_score
     aggregated_log["std_action_diversity_score"] = std_action_diversity_score
@@ -143,10 +148,24 @@ def result_analysis(
     log.info(f"Avg. action entropy of all runs: {avg_action_entropy:.3f}")
     log.info(f"Std. action entropy of all runs: {std_action_entropy:.3f}")
     log.info(f"Ste. action entropy of all runs: {ste_action_entropy:.3f}")
+    log.info("=====================================")
 
     aggregated_log["avg_action_entropy"] = avg_action_entropy
     aggregated_log["std_action_entropy"] = std_action_entropy
     aggregated_log["ste_action_entropy"] = ste_action_entropy
+
+    # Win rate of all models
+    avg_win_rate, std_win_rate, ste_win_rate = compute_mean_std_ste(
+        all_runs_win_rate
+    )
+    log.info(f"Avg. win rate of all runs: {avg_win_rate:.3f}")
+    log.info(f"Std. win rate of all runs: {std_win_rate:.3f}")
+    log.info(f"Ste. win rate of all runs: {ste_win_rate:.3f}")
+
+    aggregated_log["avg_win_rate"] = avg_win_rate
+    aggregated_log["std_win_rate"] = std_win_rate
+    aggregated_log["ste_win_rate"] = ste_win_rate
+    log.info("=====================================")
 
     if "mutual_exclusivity" in single_eval_results[0]:
         all_runs_me = np.array(
@@ -179,6 +198,8 @@ def result_analysis(
         log.info(
             f"Avg. mutual exclusivity violations count of all runs: {avg_me_violations_count:.3f}"
         )
+        log.info("=====================================")
+
         aggregated_log["avg_mutual_exclusivity_violations_count"] = (
             avg_me_violations_count
         )
@@ -195,7 +216,12 @@ def result_analysis(
         log.info(
             f"Avg. missing actions count of all runs: {avg_missing_actions_count:.3f}"
         )
+        log.info("=====================================")
+
         aggregated_log["avg_missing_actions_count"] = avg_missing_actions_count
+
+    with open("aggregated_log.json", "w") as f:
+        json.dump(aggregated_log, f, indent=4)
 
     return aggregated_log
 

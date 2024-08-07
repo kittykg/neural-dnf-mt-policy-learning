@@ -1,9 +1,13 @@
 experiment_name: blackjack_ppo_ndnf_mt_al64_3e5_aux10
 multirun_seeds: [1681, 2484, 3191, 4862, 6448, 7063, 7142, 7213, 7620, 9007]
+share_layer_with_critic: False
+
+# experiment_name: blackjack_ppo_ndnf_mt_slwc_al64_3e5_aux10
+# multirun_seeds: [795, 1546, 2796, 2850, 3806, 4616, 4637, 5964, 8846, 9519]
+# share_layer_with_critic: True
 
 use_eo: False
 use_mt: True
-share_layer_with_critic: False
 
 use_argmax_to_choose_action: True
 use_decode_obs: True

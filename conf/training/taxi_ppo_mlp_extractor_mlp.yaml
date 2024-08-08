@@ -1,0 +1,33 @@
+experiment_name: taxi_ppo_mlpexc_mlp_al64_3e6
+
+seed: null
+use_cuda: False
+use_mps: False
+
+use_decode_obs: False
+actor_latent_size: 64
+
+log_interval: 100
+
+total_timesteps: 3e6
+lr_actor: 1e-4
+lr_critic: 1e-3
+num_envs: 8
+num_steps: 1024
+anneal_lr: True
+gamma: 0.999
+gae_lambda: 0.98
+num_minibatches: 64
+update_epochs: 4
+norm_adv: True
+clip_coef: 0.2
+clip_vloss: True
+ent_coef: 0.01
+vf_coef: 0.5
+max_grad_norm: 0.5
+target_kl: null
+
+# Video recording disabled for now
+# video_recording: True
+# video_recording_freq: 1000
+# video_recording_env_seed: 123

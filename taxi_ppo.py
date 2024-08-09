@@ -152,6 +152,7 @@ def train_ppo(
         envs.single_action_space, gym.spaces.Discrete
     ), "only discrete action space is supported"
 
+    # Agent setup
     agent = construct_model(
         actor_latent_size=training_cfg["actor_latent_size"],
         use_ndnf=use_ndnf,
@@ -163,11 +164,15 @@ def train_ppo(
         ),
         critic_latent_1=training_cfg.get("critic_latent_1", 256),
         critic_latent_2=training_cfg.get("critic_latent_2", 64),
+        mlp_actor_disable_bias=training_cfg.get(
+            "mlp_actor_disable_bias", False
+        ),
     )
     agent.train()
     agent.to(device)
     log.info(agent)
 
+    # Optimizer setup
     optimizer = optim.Adam(
         [
             {
@@ -181,6 +186,7 @@ def train_ppo(
         ],
         eps=1e-5,
     )
+    track_gradients = training_cfg.get("track_gradients", False)
 
     # ALGO Logic: Storage setup
     num_steps: int = training_cfg["num_steps"]
@@ -401,6 +407,20 @@ def train_ppo(
                 )
                 optimizer.step()
 
+            if use_wandb and track_gradients:
+                wandb_grad_log = {}
+                for name, parameters in agent.named_parameters():
+                    if "actor" not in name:
+                        continue
+                    if not parameters.requires_grad:
+                        continue
+                    if parameters.grad is None:
+                        continue
+                    wandb_grad_log[f"grads/{name}"] = (
+                        parameters.grad.norm().item()
+                    )
+                wandb.log(wandb_grad_log)
+
             if (
                 training_cfg["target_kl"] is not None
                 and approx_kl > training_cfg["target_kl"]  # type: ignore
@@ -518,6 +538,8 @@ def train_ppo(
 def run_experiment(cfg: DictConfig):
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
+    if seed == None:
+        seed = random.randint(0, 5000)
 
     full_experiment_name = f"{training_cfg['experiment_name']}_{seed}"
 

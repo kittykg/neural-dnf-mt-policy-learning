@@ -202,6 +202,41 @@ class TaxiEnvPPOMLPAgent(TaxiEnvPPOBaseAgent):
     """
 
     actor: nn.Sequential
+    actor_disable_bias: bool
+
+    def __init__(
+        self,
+        use_decode_obs: bool,
+        actor_latent_size: int,
+        share_layer_with_critic: bool,
+        critic_latent_1: int,
+        critic_latent_2: int | None,
+        actor_disable_bias: bool = False,
+    ):
+        self.actor_disable_bias = actor_disable_bias
+
+        super().__init__(
+            use_decode_obs,
+            actor_latent_size,
+            share_layer_with_critic,
+            critic_latent_1,
+            critic_latent_2,
+        )
+
+    def _create_default_actor(self) -> nn.Module:
+        return nn.Sequential(
+            nn.Linear(
+                self.num_inputs,
+                self.actor_latent_size,
+                bias=not self.actor_disable_bias,
+            ),
+            nn.Tanh(),
+            nn.Linear(
+                self.actor_latent_size,
+                self.action_size,
+                bias=not self.actor_disable_bias,
+            ),
+        )
 
     def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
         """
@@ -509,6 +544,7 @@ def construct_model(
     critic_latent_1: int = 256,
     critic_latent_2: int | None = 64,
     pretrained_critic: dict | None = None,
+    mlp_actor_disable_bias: bool = False,
 ) -> TaxiEnvPPOBaseAgent:
     if not use_ndnf:
         return TaxiEnvPPOMLPAgent(
@@ -517,6 +553,7 @@ def construct_model(
             share_layer_with_critic=share_layer_with_critic,
             critic_latent_1=critic_latent_1,
             critic_latent_2=critic_latent_2,
+            actor_disable_bias=mlp_actor_disable_bias,
         )
 
     assert not (

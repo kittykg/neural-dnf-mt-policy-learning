@@ -10,6 +10,7 @@ actor_latent_size: 512
 use_eo: False
 use_mt: True
 share_layer_with_critic: False
+# track_gradients: False
 
 critic_latent_1: 1024
 critic_latent_2: 256

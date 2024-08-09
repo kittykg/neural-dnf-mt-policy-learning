@@ -410,8 +410,6 @@ def train_ppo(
             if use_wandb and track_gradients:
                 wandb_grad_log = {}
                 for name, parameters in agent.named_parameters():
-                    if "actor" not in name:
-                        continue
                     if not parameters.requires_grad:
                         continue
                     if parameters.grad is None:

@@ -28,15 +28,11 @@ except ValueError:  # Already removed
     pass
 
 
-from neural_dnf.post_training import prune_neural_dnf
-from common import synthesize
 from ss_corridor_ppo import (
     construct_model,
     construct_single_environment,
     make_env,
     ss_corridor_preprocess_obs,
-    SSCPPONDNFBasedAgent,
-    SSCPPONDNFEOAgent,
     SSCPPONDNFMutexTanhAgent,
 )
 from utils import post_to_discord_webhook
@@ -189,7 +185,7 @@ def post_train_eval(eval_cfg: DictConfig):
             use_eo="eo" in experiment_name,
             use_mt="mt" in experiment_name,
         )
-        assert isinstance(model, SSCPPONDNFBasedAgent)
+        assert isinstance(model, SSCPPONDNFMutexTanhAgent)
         model.to(DEVICE)
         model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
         model.load_state_dict(model_state)
@@ -199,8 +195,6 @@ def post_train_eval(eval_cfg: DictConfig):
         post_training(
             model_dir=model_dir,
             model=model,
-            envs=envs,
-            process_obs=process_obs,
         )
 
         log.info("======================================\n")

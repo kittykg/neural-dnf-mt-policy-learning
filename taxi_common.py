@@ -109,6 +109,24 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         x = self._get_actor_first_layer_output(x)
         return self.critic(x)
 
+    def get_step_by_step_value(
+        self, preprocessed_obs: dict[str, Tensor]
+    ) -> list[Tensor]:
+        """
+        This function is used for debugging purposes.
+        """
+        x = preprocessed_obs[self.input_key]
+
+        if self.share_layer_with_critic:
+            x = self._get_actor_first_layer_output(x)
+
+        values = []
+        for layer in self.critic:
+            x = layer(x)
+            values.append(x)
+
+        return values
+
     def _get_actor_first_layer_output(self, x: Tensor) -> Tensor:
         """
         Return the output of the actor's first layer, if the critic and actor
@@ -174,15 +192,15 @@ class TaxiEnvPPOBaseAgent(nn.Module):
 
             return nn.Sequential(
                 nn.Linear(self.num_inputs, self.critic_latent_1),
-                nn.ReLU(),
+                nn.Tanh(),
                 nn.Linear(self.critic_latent_1, self.critic_latent_2),
-                nn.ReLU(),
+                nn.Tanh(),
                 nn.Linear(self.critic_latent_2, 1),
             )
 
         return nn.Sequential(
             nn.Linear(self.actor_latent_size, self.critic_latent_1),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(self.critic_latent_1, 1),
         )
 

@@ -8,6 +8,7 @@ from typing import Any
 import gymnasium as gym
 import hydra
 from hydra.core.hydra_config import HydraConfig
+from matplotlib import pyplot as plt
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 import torch
@@ -168,6 +169,7 @@ def train_ppo(
             "mlp_actor_disable_bias", False
         ),
     )
+    log.info(agent.state_dict())
     agent.train()
     agent.to(device)
     log.info(agent)
@@ -417,6 +419,26 @@ def train_ppo(
                     wandb_grad_log[f"grads/{name}"] = (
                         parameters.grad.norm().item()
                     )
+
+                test_input_obs = np.array([227])
+                preprocessed_test = taxi_env_preprocess_obs(
+                    test_input_obs, use_ndnf, device
+                )
+                with torch.no_grad():
+                    critic_outputs = agent.get_step_by_step_value(
+                        preprocessed_test
+                    )
+
+                # Plot the activations of each layer
+                for i, critic_output in enumerate(critic_outputs):
+                    fig, ax = plt.subplots()
+                    ax.hist(critic_output.cpu().numpy().flatten(), bins=50)
+                    ax.set_title(f"Critic Sequence {i} activations")
+                    wandb_grad_log[f"critic_activations/seq_{i}"] = wandb.Image(
+                        fig
+                    )
+                    plt.close(fig)
+
                 wandb.log(wandb_grad_log)
 
             if (

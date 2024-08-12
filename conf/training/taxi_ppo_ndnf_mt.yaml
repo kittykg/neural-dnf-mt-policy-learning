@@ -1,52 +1,52 @@
-experiment_name: taxi_ppo_ndnf_mt_al512_c1024x256_5e6
+experiment_name: taxi_ppo_ndnf_mt_al256_c256x256tanh_no_aux_5e6
 
-seed: 73
+seed: 7574
 use_cuda: False
 use_mps: False
 
 use_decode_obs: False
-actor_latent_size: 512
+actor_latent_size: 256
 
 use_eo: False
 use_mt: True
 share_layer_with_critic: False
-# track_gradients: False
+track_gradients: True
 
-critic_latent_1: 1024
+critic_latent_1: 256
 critic_latent_2: 256
 
 log_interval: 100
 
 dds:
-  initial_delta: 0.1
+  initial_delta: 0.01
   delta_decay_delay: 300
   delta_decay_steps: 100
   delta_decay_rate: 1.1
 
 aux_loss:
-  dis_l1_mod_lambda: 1e-6
+  dis_l1_mod_lambda: 0
   tanh_conj_lambda: 0
-  mt_ce2_lambda: 1e-4
+  mt_ce2_lambda: 0
 
 # pretrained_critic:
 #   model_path: null # fill this in with the path to another model's state dict
 #   disable_critic_training: True
 
 total_timesteps: 5e6
-lr_actor: 1e-5
-lr_critic: 1e-4
-num_envs: 8
-num_steps: 128
+lr_actor: 2e-4
+lr_critic: 2e-3
+num_envs: 64
+num_steps: 2048
 anneal_lr: True
-gamma: 0.99
-gae_lambda: 0.95
-num_minibatches: 4
-update_epochs: 4
+gamma: 0.999
+gae_lambda: 0.946
+num_minibatches: 128
+update_epochs: 8
 norm_adv: True
-clip_coef: 0.3 
+clip_coef: 0.2
 clip_vloss: True
-ent_coef: 0.1
-vf_coef: 1
+ent_coef: 0.003
+vf_coef: 0.5
 max_grad_norm: 0.5
 target_kl: null
 

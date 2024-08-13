@@ -30,6 +30,12 @@ N_ACTIONS: int = 6
 # =============================================================================#
 
 
+def linear_layer_init(layer: nn.Linear, std=np.sqrt(2), bias_const=0.0):
+    torch.nn.init.orthogonal_(layer.weight, std)
+    torch.nn.init.constant_(layer.bias, bias_const)
+    return layer
+
+
 class TaxiEnvPPOBaseAgent(nn.Module):
     """
     To create a base agent, pass in the following parameters:
@@ -95,7 +101,9 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         self.actor = self._create_default_actor()
         self.critic = self._create_default_critic()
 
-        self._init_params()
+        # For taxi agents, we use orthogonal initialisation
+        # Disable _init_params() for now
+        # self._init_params()
 
     def get_value(self, preprocessed_obs: dict[str, Tensor]) -> Tensor:
         """
@@ -180,28 +188,30 @@ class TaxiEnvPPOBaseAgent(nn.Module):
         return Categorical(logits=logits)
 
     def _create_default_actor(self) -> nn.Module:
-        return nn.Sequential(
-            nn.Linear(self.num_inputs, self.actor_latent_size),
-            nn.Tanh(),
-            nn.Linear(self.actor_latent_size, self.action_size),
-        )
+        raise NotImplementedError
 
     def _create_default_critic(self) -> nn.Sequential:
         if not self.share_layer_with_critic:
             assert self.critic_latent_2 is not None, "critic_latent_2 is None"
 
             return nn.Sequential(
-                nn.Linear(self.num_inputs, self.critic_latent_1),
-                nn.Tanh(),
-                nn.Linear(self.critic_latent_1, self.critic_latent_2),
-                nn.Tanh(),
-                nn.Linear(self.critic_latent_2, 1),
+                linear_layer_init(
+                    nn.Linear(self.num_inputs, self.critic_latent_1)
+                ),
+                nn.ReLU(),
+                linear_layer_init(
+                    nn.Linear(self.critic_latent_1, self.critic_latent_2)
+                ),
+                nn.ReLU(),
+                linear_layer_init(nn.Linear(self.critic_latent_2, 1)),
             )
 
         return nn.Sequential(
-            nn.Linear(self.actor_latent_size, self.critic_latent_1),
-            nn.Tanh(),
-            nn.Linear(self.critic_latent_1, 1),
+            linear_layer_init(
+                nn.Linear(self.actor_latent_size, self.critic_latent_1)
+            ),
+            nn.ReLU(),
+            linear_layer_init(nn.Linear(self.critic_latent_1, 1)),
         )
 
     def _init_params(self) -> None:
@@ -243,16 +253,20 @@ class TaxiEnvPPOMLPAgent(TaxiEnvPPOBaseAgent):
 
     def _create_default_actor(self) -> nn.Module:
         return nn.Sequential(
-            nn.Linear(
-                self.num_inputs,
-                self.actor_latent_size,
-                bias=not self.actor_disable_bias,
+            linear_layer_init(
+                nn.Linear(
+                    self.num_inputs,
+                    self.actor_latent_size,
+                    bias=not self.actor_disable_bias,
+                )
             ),
             nn.Tanh(),
-            nn.Linear(
-                self.actor_latent_size,
-                self.action_size,
-                bias=not self.actor_disable_bias,
+            linear_layer_init(
+                nn.Linear(
+                    self.actor_latent_size,
+                    self.action_size,
+                    bias=not self.actor_disable_bias,
+                )
             ),
         )
 

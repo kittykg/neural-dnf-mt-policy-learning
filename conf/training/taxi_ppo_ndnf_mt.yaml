@@ -1,6 +1,6 @@
-experiment_name: taxi_ppo_ndnf_mt_al256_c256x256tanh_no_aux_5e6
+experiment_name: taxi_ppo_ndnf_mt_al256_cr256x256relu_no_aux_5e6
 
-seed: 7574
+seed: null
 use_cuda: False
 use_mps: False
 
@@ -33,8 +33,8 @@ aux_loss:
 #   disable_critic_training: True
 
 total_timesteps: 5e6
-lr_actor: 2e-4
-lr_critic: 2e-3
+lr_actor: 2e-5
+lr_critic: 2e-4
 num_envs: 64
 num_steps: 2048
 anneal_lr: True
@@ -46,7 +46,7 @@ norm_adv: True
 clip_coef: 0.2
 clip_vloss: True
 ent_coef: 0.003
-vf_coef: 0.5
+vf_coef: 5
 max_grad_norm: 0.5
 target_kl: null
 

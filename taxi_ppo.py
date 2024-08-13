@@ -169,7 +169,6 @@ def train_ppo(
             "mlp_actor_disable_bias", False
         ),
     )
-    log.info(agent.state_dict())
     agent.train()
     agent.to(device)
     log.info(agent)

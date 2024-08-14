@@ -799,7 +799,7 @@ def train_ppo(
     agent.train()
     agent.to(device)
 
-    optimizer = optim.Adam(
+    optimizer = optim.adam.Adam(
         agent.parameters(), lr=training_cfg["learning_rate"], eps=1e-5
     )
 

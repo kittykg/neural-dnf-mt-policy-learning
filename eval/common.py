@@ -1,6 +1,20 @@
 from enum import IntEnum
 
 
+class ToyTextSoftExtractionReturnCode(IntEnum):
+    # After training
+    AFTER_TRAIN_NO_ABNORMAL_STATES = 1  # ideal
+    # Pruning codes
+    AFTER_PRUNE_NO_ABNORMAL_STATES = 2  # ideal
+    FAIL_AT_PRUNE_MISS_ACTION = -1  # failure code
+    FAIL_AT_PRUNE_NOT_ME = -2  # failure code
+    # Threshold codes
+    THRESHOLD_HAS_PERFECT_CANDIDATE = 3  # ideal
+    THRESHOLD_IMPERFECT_CANDIDATE = 4  # suboptimal
+    # Finish code
+    SOFT_EXTRACTION_FINISH = 5
+
+
 class ToyTextEnvFailureCode(IntEnum):
     # After training failure codes
     FAIL_AT_EVAL_NDNF_TRUNCATED = -1

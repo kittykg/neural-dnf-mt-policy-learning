@@ -183,7 +183,7 @@ def train_ppo(
     agent.train()
     agent.to(device)
 
-    optimizer = optim.Adam(
+    optimizer = optim.adam.Adam(
         agent.parameters(), lr=training_cfg["learning_rate"], eps=1e-5
     )
 
@@ -518,7 +518,7 @@ def train_ppo(
             for k, v in eval_log.items():
                 if isinstance(v, bool):
                     mod_logs[f"eval/{k}"] = int(v)
-                elif isinstance(v, list):
+                elif isinstance(v, (list, np.ndarray, Tensor)):
                     continue
                 else:
                     mod_logs[f"eval/{k}"] = v

@@ -424,7 +424,9 @@ def train(
     )
     ndnf_model.set_delta_val(train_cfg["dds"]["initial_delta"])
 
-    optimizer = torch.optim.Adam(ndnf_model.parameters(), lr=train_cfg["lr"])
+    optimizer = torch.optim.adam.Adam(
+        ndnf_model.parameters(), lr=train_cfg["lr"]
+    )
 
     if isinstance(ndnf_model, BaseNeuralDNFMutexTanh) and not use_argmax_action:
         criterion = torch.nn.KLDivLoss()

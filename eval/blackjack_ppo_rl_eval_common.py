@@ -125,6 +125,7 @@ def ndnf_based_agent_cmp_target_csv(
     target_policy_csv_path: Path,
     agent: BlackjackNDNFBasedAgent,
     device: torch.device,
+    normal_indices: list[int] | None = None,
 ) -> dict[str, Any]:
     logs: dict[str, Any] = {
         "mutual_exclusivity": True,
@@ -134,43 +135,110 @@ def ndnf_based_agent_cmp_target_csv(
     target_policy = get_target_policy(target_policy_csv_path)
     ret = get_relevant_targets_from_target_policy(True, target_policy, device)
     obs_list = ret["obs_list"]
+    if normal_indices is not None:
+        obs_list = [obs_list[i] for i in normal_indices]
     obs_dict = ret["obs_dict"]
+    if normal_indices is not None:
+        obs_dict = {k: v[normal_indices] for k, v in obs_dict.items()}
     target_q_actions = ret["target_q_actions"]
+    if normal_indices is not None:
+        target_q_actions = target_q_actions[normal_indices]
 
     dst = DiversityScoreTracker(N_ACTIONS)
     with torch.no_grad():
         actions, tanh_actions = agent.get_actions(
             preprocessed_obs=obs_dict, use_argmax=True
         )
+        logs["actions"] = actions
         dst.update(actions)
 
     tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
+    me_violation_indices = None
+    ma_indices = None
+
+    # Check for mutual exclusivity violations
     if np.any(tanh_actions_discretised > 1):
         logs["mutual_exclusivity"] = False
         logs["mutual_exclusivity_violations_count"] = int(
             np.count_nonzero(tanh_actions_discretised > 1)
         )
+        me_violation_indices = np.where(tanh_actions_discretised > 1)[
+            0
+        ].tolist()
+        logs["mutual_exclusivity_violations_indices"] = me_violation_indices
         logs["mutual_exclusivity_violations_states"] = [
-            obs_list[i] for i in np.where(tanh_actions_discretised > 1)[0]
+            obs_list[i] for i in me_violation_indices
         ]
 
+    # Check for missing actions
     if np.any(tanh_actions_discretised == 0):
         logs["missing_actions"] = True
         logs["missing_actions_count"] = int(
             np.count_nonzero(tanh_actions_discretised == 0)
         )
-        logs["missing_actions_states"] = [
-            obs_list[i] for i in np.where(tanh_actions_discretised == 0)[0]
-        ]
+        ma_indices = np.where(tanh_actions_discretised == 0)[0].tolist()
+        logs["missing_actions_indices"] = ma_indices
+        logs["missing_actions_states"] = [obs_list[i] for i in ma_indices]
 
+    # Compute indices
+    indices_separation_dict = (
+        get_abnormal_and_normal_state_indices_from_ndnf_based_agent(
+            obs_list, me_violation_indices, ma_indices
+        )
+    )
+    logs.update(indices_separation_dict)
+
+    # Compute other metrics
     policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
         target_q_actions
     )
+
     logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
     logs["action_diversity_score"] = dst.compute_diversity_score()
     logs["action_entropy"] = dst.compute_entropy()
 
     return logs
+
+
+def get_abnormal_and_normal_state_indices_from_ndnf_based_agent(
+    all_obs_list: list,
+    me_violation_indices: list[int] | None,
+    ma_indices: list[int] | None,
+) -> dict[str, list]:
+    ABNORMAL_INDICES_KEYS = "abnormal_indices"
+    NORMAL_INDICES_KEYS = "normal_indices"
+
+    all_possible_idx = set(range(len(all_obs_list)))
+    if me_violation_indices is None and ma_indices is None:
+        return {
+            ABNORMAL_INDICES_KEYS: [],
+            NORMAL_INDICES_KEYS: list(all_possible_idx),
+        }
+
+    if me_violation_indices is None and ma_indices is not None:
+        return {
+            ABNORMAL_INDICES_KEYS: ma_indices,
+            NORMAL_INDICES_KEYS: sorted(
+                list(all_possible_idx.difference(ma_indices))
+            ),
+        }
+
+    if me_violation_indices is not None and ma_indices is None:
+        return {
+            ABNORMAL_INDICES_KEYS: me_violation_indices,
+            NORMAL_INDICES_KEYS: sorted(
+                list(all_possible_idx.difference(me_violation_indices))
+            ),
+        }
+
+    assert me_violation_indices is not None and ma_indices is not None
+    overall_idx_set = set(me_violation_indices).union(ma_indices)
+    normal_idx_list = sorted(list(all_possible_idx.difference(overall_idx_set)))
+
+    return {
+        ABNORMAL_INDICES_KEYS: sorted(list(overall_idx_set)),
+        NORMAL_INDICES_KEYS: normal_idx_list,
+    }
 
 
 def eval_on_environments(

@@ -1,6 +1,5 @@
-# This script evaluates the NDNF MT model on the Blackjack environment compared
-# to a target Q-value table.
-from collections import OrderedDict
+# This script soft-extract ASP rules from the NDNF MT model on the Blackjack
+# environment, based on the comparison result on a target Q-value table.
 from copy import deepcopy
 import json
 import logging
@@ -10,14 +9,10 @@ import sys
 import traceback
 from typing import Any
 
-import clingo
-import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 import hydra
 from omegaconf import DictConfig
 import torch
-from torch import Tensor
 
 file = Path(__file__).resolve()
 parent, root = file.parent, file.parents[1]
@@ -28,7 +23,6 @@ try:
 except ValueError:  # Already removed
     pass
 
-
 from neural_dnf.post_training import (
     prune_neural_dnf,
     apply_threshold,
@@ -37,17 +31,13 @@ from neural_dnf.post_training import (
 )
 
 from blackjack_common import (
-    decode_tuple_obs,
     construct_model,
     construct_single_environment,
     get_target_policy,
-    create_policy_plots_from_asp,
-    create_policy_plots_from_action_distribution,
-    TargetPolicyType,
     BlackjackNDNFMutexTanhAgent,
 )
-from blackjack_ppo import get_agent_policy
-from eval.common import ToyTextEnvFailureCode
+from eval.common import ToyTextSoftExtractionReturnCode
+from eval.blackjack_ppo_rl_eval_common import ndnf_based_agent_cmp_target_csv
 from utils import post_to_discord_webhook
 
 
@@ -55,73 +45,51 @@ DEFAULT_GEN_SEED = 2
 BLACKJACK_SINGLE_ENV_NUM_EPISODES = 500
 DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "blackjack_ppo_storage"
+
 log = logging.getLogger()
 single_env = construct_single_environment()
 
 
-def get_ndnf_action(
-    model: BlackjackNDNFMutexTanhAgent,
-    obs: dict[str, Tensor],
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]:
-    # Use normal tanh interpretation
-    with torch.no_grad():
-        actions = model.get_actions(
-            preprocessed_obs=obs,
-            use_argmax=True,
-        )
-    return actions
-
-
-def simulate_fn(
-    model: BlackjackNDNFMutexTanhAgent,
-    target_policy: TargetPolicyType,
-) -> dict[str, Any]:
-    logs: dict[str, Any] = {
-        "mutual_exclusivity": True,
-        "missing_actions": False,
-    }
-
-    obs_list = [obs for obs in target_policy.keys()]
-    target_q_actions = np.array([target_policy[obs] for obs in obs_list])
-    decode_input_nd_array = np.stack(
-        [decode_tuple_obs(obs) for obs in obs_list]
-    )
-    decode_input_nd_array = np.where(
-        decode_input_nd_array == 0, -1, decode_input_nd_array
-    )
-
-    actions, tanh_actions = get_ndnf_action(
-        model,
-        {
-            "decode_input": torch.tensor(
-                decode_input_nd_array, dtype=torch.float32, device=DEVICE
-            )
-        },
-    )
-    tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)
-    if np.any(tanh_actions_discretised > 1):
-        logs["mutual_exclusivity"] = False
-    if np.any(tanh_actions_discretised == 0):
-        logs["missing_actions"] = True
-
-    policy_error_cmp_to_q = np.count_nonzero(actions != target_q_actions) / len(
-        target_q_actions
-    )
-    logs["policy_error_cmp_to_q"] = policy_error_cmp_to_q
-    logs["actions"] = actions
-
-    return logs
-
-
 def post_training(
     model: BlackjackNDNFMutexTanhAgent,
-    target_policy: TargetPolicyType,
+    target_policy_csv_path: Path,
     eval_cfg: DictConfig,
     model_dir: Path,
-) -> ToyTextEnvFailureCode | dict[str, Any]:
+) -> ToyTextSoftExtractionReturnCode | dict[str, Any]:
+    soft_traction_return_codes = []
+    target_policy = get_target_policy(target_policy_csv_path)
+    total_number_of_states = len(target_policy)
 
+    # Stage 0: Separate states that violates mutual exclusivity and missing
+    # actions
+    initial_log = ndnf_based_agent_cmp_target_csv(
+        target_policy_csv_path, model, DEVICE
+    )
+    normal_indices = initial_log["normal_indices"]
+
+    if initial_log["mutual_exclusivity"] and not initial_log["missing_actions"]:
+        soft_traction_return_codes.append(
+            ToyTextSoftExtractionReturnCode.AFTER_TRAIN_NO_ABNORMAL_STATES
+        )
+
+    log.info(f"Initial NDNF-MT agent eval:")
+    log.info(f"Mutual exclusivity: {initial_log['mutual_exclusivity']}")
+    log.info(f"Missing actions: {initial_log['missing_actions']}")
+    log.info(
+        f"Policy error compared to Q: {initial_log['policy_error_cmp_to_q']}"
+    )
+    log.info(f"Normal states indices: {normal_indices}")
+    log.info(
+        "The following processes are all done on these normal state indices. "
+        "For the other states, we will process in a different way."
+    )
+    log.info("======================================")
+
+    # Helper functions
     def _simulate_with_print(model_name: str) -> dict[str, Any]:
-        logs = simulate_fn(model, target_policy)
+        logs = ndnf_based_agent_cmp_target_csv(
+            target_policy_csv_path, model, DEVICE, normal_indices
+        )
         log.info(f"Model: {model_name}")
         log.info(f"Mutual exclusivity: {logs['mutual_exclusivity']}")
         log.info(f"Missing actions: {logs['missing_actions']}")
@@ -160,33 +128,12 @@ def post_training(
 
         return True
 
-    # Stage 1: Evaluate the model post-training
-    og_ndnf_mt_logs = _simulate_with_print("NDNF MT")
-    if og_ndnf_mt_logs["missing_actions"]:
-        log.info("NDNF MT has missing actions!")
-        return ToyTextEnvFailureCode.FAIL_AT_EVAL_NDNF_MT_MISS_ACTION
-    if not og_ndnf_mt_logs["mutual_exclusivity"]:
-        log.info("NDNF MT is not mutually exclusive!")
-        return ToyTextEnvFailureCode.FAIL_AT_EVAL_NDNF_MT_NOT_ME
-
-    action_distribution = get_agent_policy(
-        model, target_policy, torch.device("cpu")
-    )
-    plot = create_policy_plots_from_action_distribution(
-        target_policy,
-        action_distribution,
-        model_dir.name,
-        argmax=True,
-        plot_diff=True,
-    )
-    plot.savefig(f"{model_dir.name}_policy.png")
-    plt.close()
-
+    # Stage 1: Evaluate the model post-training only on normal states
+    og_ndnf_mt_logs = _simulate_with_print("NDNF MT (normal states only)")
     log.info("======================================")
 
     # Stage 2: Prune the model
-
-    def prune_model() -> ToyTextEnvFailureCode | None:
+    def prune_model() -> ToyTextSoftExtractionReturnCode | None:
         log.info("Pruning the model...")
 
         pruning_cmp_option = eval_cfg.get("pruning_cmp_option", ["a", "b"])
@@ -206,13 +153,15 @@ def post_training(
         prune_count = 0
 
         while True:
-            log.info(f"Pruning iteration: {prune_count+1}")
+            log.info(f"Pruning iteration: {prune_count + 1}")
             prune_result_dict = prune_neural_dnf(
                 model.actor,
-                simulate_fn,
+                ndnf_based_agent_cmp_target_csv,
                 {
-                    "model": model,
-                    "target_policy": target_policy,
+                    "target_policy_csv_path": target_policy_csv_path,
+                    "agent": model,
+                    "device": DEVICE,
+                    "normal_indices": normal_indices,
                 },
                 pruning_cmp_fn,
                 options={
@@ -242,16 +191,17 @@ def post_training(
             )
 
             post_prune_ndnf_mt_log = _simulate_with_print(
-                f"NDNF MT dis - (Prune iteration: {prune_count})"
+                f"NDNF MT - (Prune iteration: {prune_count + 1})"
             )
 
             if post_prune_ndnf_mt_log["missing_actions"]:
                 log.info("Post prune NDNF MT has missing actions!")
-                return ToyTextEnvFailureCode.FAIL_AT_PRUNE_MISS_ACTION
+                return ToyTextSoftExtractionReturnCode.FAIL_AT_PRUNE_MISS_ACTION
             if not post_prune_ndnf_mt_log["mutual_exclusivity"]:
                 log.info("Post prune NDNF MT is not mutually exclusive!")
-                return ToyTextEnvFailureCode.FAIL_AT_PRUNE_NOT_ME
+                return ToyTextSoftExtractionReturnCode.FAIL_AT_PRUNE_NOT_ME
 
+            log.info("-------------")
             # If any of the important keys has the value not 0, then we should continue pruning
             if any([prune_result_dict[k] != 0 for k in important_keys]):
                 sd_list.append(deepcopy(model.state_dict()))
@@ -269,32 +219,27 @@ def post_training(
         model.load_state_dict(pruned_state)
     else:
         ret = prune_model()
-        if ret is not None and isinstance(ret, ToyTextEnvFailureCode):
+        if ret is not None and isinstance(ret, ToyTextSoftExtractionReturnCode):
             return ret
         torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
 
     _simulate_with_print("NDNF MT pruned")
-
-    action_distribution = get_agent_policy(
-        model, target_policy, torch.device("cpu")
+    soft_traction_return_codes.append(
+        ToyTextSoftExtractionReturnCode.AFTER_PRUNE_NO_ABNORMAL_STATES
     )
-    plot = create_policy_plots_from_action_distribution(
-        target_policy,
-        action_distribution,
-        f"{model_dir.name}_pruned",
-        argmax=True,
-        plot_diff=True,
-    )
-    plot.savefig(f"{model_dir.name}_pruned_policy.png")
-    plt.close()
-
     log.info("======================================")
 
     # 3. Thresholding
     og_conj_weight = model.actor.conjunctions.weights.data.clone()
     og_disj_weight = model.actor.disjunctions.weights.data.clone()
 
-    def threshold_model() -> ToyTextEnvFailureCode | list[float]:
+    # Convert the agent to plain NDNF agent
+    model = model.to_ndnf_agent()  # type: ignore
+    model.eval()
+
+    def threshold_model() -> (
+        tuple[ToyTextSoftExtractionReturnCode, dict[str, list]]
+    ):
         log.info("Thresholding the model...")
 
         threshold_upper_bound = get_thresholding_upper_bound(model.actor)
@@ -305,7 +250,9 @@ def post_training(
 
         for v in t_vals:
             apply_threshold(model.actor, og_conj_weight, og_disj_weight, v)
-            r = simulate_fn(model, target_policy)
+            r = ndnf_based_agent_cmp_target_csv(
+                target_policy_csv_path, model, DEVICE, normal_indices
+            )
             r["t_val"] = v.item()
             result_dicts.append(r)
 
@@ -319,6 +266,7 @@ def post_training(
         thresholding_cmp_t_a = eval_cfg.get("thresholding_cmp_t_a", 1e-3)
         thresholding_cmp_t_b = eval_cfg.get("thresholding_cmp_t_b", 1e-3)
 
+        # Check for perfect thresholding
         for d in sorted_result_dict:
             if not comparison_fn(
                 og_ndnf_mt_logs,
@@ -330,14 +278,48 @@ def post_training(
                 continue
             t_vals_candidates.append(d["t_val"])
 
-        if len(t_vals_candidates) == 0:
-            log.info("No thresholding candidate found!")
-            return ToyTextEnvFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
+        if len(t_vals_candidates) != 0:
+            log.info(
+                f"t_vals_candidates: {[round(v, 2) for v in t_vals_candidates]}"
+            )
+            return (
+                ToyTextSoftExtractionReturnCode.THRESHOLD_HAS_PERFECT_CANDIDATE,
+                {
+                    "t_val_candidates": t_vals_candidates,
+                    "normal_indices": normal_indices,
+                },
+            )
 
-        log.info(
-            f"t_vals_candidates: {[round(v, 2) for v in t_vals_candidates]}"
+        log.info("No perfect thresholding candidate found!")
+
+        # Check for imperfect thresholding
+        log.info("Proceed to soft threshold...")
+        for d in sorted_result_dict:
+            me_violation_count = d.get("mutual_exclusivity_violations_count", 0)
+            ma_count = d.get("missing_actions_count", 0)
+            combined_abnormal_count = me_violation_count + ma_count
+            d["combined_abnormal_count"] = combined_abnormal_count
+
+        second_sorted_result_dict = sorted(
+            result_dicts,
+            key=lambda d: (
+                d["combined_abnormal_count"],
+                d["policy_error_cmp_to_q"],
+            ),
         )
-        return t_vals_candidates
+        best_candidate = second_sorted_result_dict[0]
+        log.info(f"Best candidate: {best_candidate['t_val']}")
+        log.info(
+            f"Combined abnormal count: {best_candidate['combined_abnormal_count']}"
+        )
+        final_normal_indices = np.array(normal_indices)[
+            best_candidate["normal_indices"]
+        ]
+
+        return ToyTextSoftExtractionReturnCode.THRESHOLD_IMPERFECT_CANDIDATE, {
+            "t_val_candidates": [best_candidate["t_val"]],
+            "normal_indices": final_normal_indices.tolist(),
+        }
 
     # Check for checkpoints
     # If the thresholding process is done, then we load the threshold candidates
@@ -352,50 +334,37 @@ def post_training(
         )
         torch.save(model.state_dict(), model_dir / "thresholded_model.pth")
 
-    if (model_dir / "thresholded_model.pth").exists():
-        thresholded_state = torch.load(
-            model_dir / "thresholded_model.pth", map_location=DEVICE
-        )
-        model.load_state_dict(thresholded_state)
-    elif (model_dir / "threshold_val_candidates.json").exists():
+    if (model_dir / "threshold_val_candidates.json").exists():
         with open(model_dir / "threshold_val_candidates.json", "r") as f:
             threshold_json_dict = json.load(f)
-            if not threshold_json_dict["threshold_success"]:
-                log.info(
-                    "Thresholding failed with no candidate in the previous run!"
-                )
-                return ToyTextEnvFailureCode.FAIL_AT_THRESHOLD_NO_CANDIDATE
-            t_vals_candidates = threshold_json_dict["threshold_vals"]
-        apply_threshold_with_candidate_list(t_vals_candidates)
+
+        ret_code = threshold_json_dict["threshold_ret_code"]
+        t_vals_candidates = threshold_json_dict["threshold_vals"]
+        normal_indices = threshold_json_dict["normal_indices"]
+
+        if (model_dir / "thresholded_model.pth").exists():
+            thresholded_state = torch.load(
+                model_dir / "thresholded_model.pth", map_location=DEVICE
+            )
+            model.load_state_dict(thresholded_state)
+        else:
+            apply_threshold_with_candidate_list(t_vals_candidates)
     else:
-        ret = threshold_model()
-        threshold_json_dict = {}
+        ret_code, ret_dict = threshold_model()
+        t_vals_candidates = ret_dict["t_val_candidates"]
+        normal_indices = ret_dict["normal_indices"]
+
         with open(model_dir / "threshold_val_candidates.json", "w") as f:
-            if isinstance(ret, ToyTextEnvFailureCode):
-                threshold_json_dict["threshold_success"] = False
-                json.dump(threshold_json_dict, f)
-                return ret
-            t_vals_candidates = ret
-            threshold_json_dict["threshold_success"] = True
+            threshold_json_dict = {}
+            threshold_json_dict["threshold_ret_code"] = ret_code.name
             threshold_json_dict["threshold_vals"] = t_vals_candidates
+            threshold_json_dict["normal_indices"] = normal_indices
             json.dump(threshold_json_dict, f)
+
         apply_threshold_with_candidate_list(t_vals_candidates)
 
-    _simulate_with_print("NDNF MT (thresholded)")
-
-    action_distribution = get_agent_policy(
-        model, target_policy, torch.device("cpu")
-    )
-    plot = create_policy_plots_from_action_distribution(
-        target_policy,
-        action_distribution,
-        f"{model_dir.name}_thresholded",
-        argmax=True,
-        plot_diff=True,
-    )
-    plot.savefig(f"{model_dir.name}_thresholded_policy.png")
-    plt.close()
-
+    threshold_log = _simulate_with_print("NDNF MT (thresholded)")
+    soft_traction_return_codes.append(ret_code)
     log.info("======================================")
 
     # 4. Rule extraction
@@ -407,130 +376,18 @@ def post_training(
         with open(model_dir / "asp_rules.lp", "w") as f:
             f.write("\n".join(rules))
     for r in rules:
-        log.info(r)
-
+        log.info(r.strip())
+    soft_traction_return_codes.append(ret_code)
+    asp_rules_coverage = len(normal_indices) / total_number_of_states
+    log.info(f"ASP rules coverage: {asp_rules_coverage}")
     log.info("======================================")
 
-    # 5. Evaluate Rule
-    res_list = []
-
-    for i in range(BLACKJACK_SINGLE_ENV_NUM_EPISODES):
-        obs, _ = single_env.reset()
-
-        terminated = False
-        truncated = False
-        reward_sum = 0
-
-        while not terminated and not truncated:
-            input = [
-                f"a_{i}."
-                for i, a in enumerate(decode_tuple_obs(obs))
-                if a.item() != 0
-            ]
-
-            ctl = clingo.Control(["--warn=none"])
-            show_statements = [f"#show disj_{i}/0." for i in range(2)]
-            ctl.add("base", [], " ".join(input + show_statements + rules))
-            ctl.ground([("base", [])])
-            with ctl.solve(yield_=True) as handle:  # type: ignore
-                all_answer_sets = [str(a) for a in handle]
-
-            if len(all_answer_sets) != 1:
-                # No model or multiple answer sets, should not happen
-                log.info(
-                    f"No model or multiple answer sets when evaluating rules."
-                )
-                return (
-                    ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
-                )
-
-            if all_answer_sets[0] == "":
-                log.info(f"No output action!")
-                return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-
-            output_classes = all_answer_sets[0].split(" ")
-            if len(output_classes) == 0:
-                log.info(f"No output action!")
-                return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-            output_classes_set = set([int(o[5:]) for o in output_classes])
-
-            if len(output_classes_set) != 1:
-                log.info(
-                    f"Output set: {output_classes_set} not exactly one item!"
-                )
-                return (
-                    ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
-                )
-
-            action = list(output_classes_set)[0]
-            obs, reward, terminated, truncated, _ = single_env.step(action)
-            reward_sum += reward  # type: ignore
-
-        res_list.append(reward_sum)
-
-    num_wins = np.sum(np.array(res_list) == 1)
-    num_losses = np.sum(np.array(res_list) == -1)
-    num_draws = np.sum(np.array(res_list) == 0)
-
-    log.info(f"Average reward: {np.mean(res_list)}")
-    log.info(
-        f"Number of wins: {num_wins}\tPercentage: {num_wins / len(res_list)}"
-    )
-    log.info(
-        f"Number of losses: {num_losses}\tPercentage: {num_losses / len(res_list)}"
-    )
-    log.info(
-        f"Number of draws: {num_draws}\tPercentage: {num_draws / len(res_list)}"
-    )
-
-    asp_policy: TargetPolicyType = OrderedDict()
-    for obs in target_policy.keys():
-        input = [
-            f"a_{i}."
-            for i, a in enumerate(decode_tuple_obs(obs))
-            if a.item() != 0
-        ]
-
-        ctl = clingo.Control(["--warn=none"])
-        show_statements = [f"#show disj_{i}/0." for i in range(2)]
-        ctl.add("base", [], " ".join(input + show_statements + rules))
-        ctl.ground([("base", [])])
-        with ctl.solve(yield_=True) as handle:  # type: ignore
-            all_answer_sets = [str(a) for a in handle]
-
-        if len(all_answer_sets) != 1:
-            # No model or multiple answer sets, should not happen
-            log.info(f"No model or multiple answer sets when evaluating rules.")
-            return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
-
-        if all_answer_sets[0] == "":
-            log.info(f"No output action!")
-            return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-
-        output_classes = all_answer_sets[0].split(" ")
-        if len(output_classes) == 0:
-            log.info(f"No output action!")
-            return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-        output_classes_set = set([int(o[5:]) for o in output_classes])
-
-        if len(output_classes_set) != 1:
-            log.info(f"Output set: {output_classes_set} not exactly one item!")
-            return ToyTextEnvFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
-
-        action = list(output_classes_set)[0]
-        asp_policy[obs] = action
-
-    obs_list = [obs for obs in target_policy.keys()]
-    asp_policy_error_cmp_q_table = np.count_nonzero(
-        np.array([asp_policy[obs] for obs in obs_list])
-        != np.array([target_policy[obs] for obs in obs_list])
-    ) / len(target_policy)
-
     return {
-        "asp_win_rate": num_wins / len(res_list),
+        "normal_indices": normal_indices,
         "asp_rules": rules,
-        "asp_policy_error_cmp_q_table": asp_policy_error_cmp_q_table,
-        "asp_policy": asp_policy,
+        "return_codes": soft_traction_return_codes,
+        "asp_coverage": asp_rules_coverage,
+        "policy_error_cmp_to_q": threshold_log["policy_error_cmp_to_q"],
     }
 
 
@@ -545,12 +402,14 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         raise FileNotFoundError(
             f"The target policy csv file {target_policy_csv_path} does not exist!"
         )
-    target_policy = get_target_policy(target_policy_csv_path)
 
     ret_dict: dict[int, list[int]] = dict(
-        [(c.value, []) for c in ToyTextEnvFailureCode] + [(0, [])]
+        [(c.value, []) for c in ToyTextSoftExtractionReturnCode]
     )
-    win_rate_list: list[float] = []
+
+    asp_coverage_list: list[float] = []
+    policy_error_cmp_to_q_list: list[float] = []
+
     json_dict = {}
 
     for s in eval_cfg["multirun_seeds"]:
@@ -570,25 +429,17 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         model.eval()
 
         log.info(f"Experiment {model_dir.name} loaded!")
-        ret = post_training(model, target_policy, eval_cfg, model_dir)
+        ret = post_training(model, target_policy_csv_path, eval_cfg, model_dir)
 
         # Use the random seed as the identifier and add to the corresponding
         # list
         if isinstance(ret, dict):
-            # Successful run
-            ret_dict[0].append(s)
-            win_rate_list.append(ret["asp_win_rate"])
-
-            asp_policy = ret.pop("asp_policy")
-            plot = create_policy_plots_from_asp(
-                target_policy,
-                asp_policy,
-                f"{experiment_name}_{s}",
-                plot_diff=True,
-            )
-            plot.savefig(f"{experiment_name}_{s}_asp_policy.png")
-            plt.close()
-
+            # Finished run
+            ret_dict[
+                ToyTextSoftExtractionReturnCode.SOFT_EXTRACTION_FINISH
+            ].append(s)
+            asp_coverage_list.append(ret["asp_coverage"])
+            policy_error_cmp_to_q_list.append(ret["policy_error_cmp_to_q"])
             json_dict[s] = ret
         else:
             ret_dict[ret].append(s)
@@ -596,21 +447,27 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         log.info("======================================\n")
 
     for k, v in ret_dict.items():
-        if k == 0:
-            log.info(f"Success: {sorted(v)}")
+        if k == ToyTextSoftExtractionReturnCode.SOFT_EXTRACTION_FINISH:
+            log.info(f"Finished: {sorted(v)}")
         else:
-            log.info(f"{ToyTextEnvFailureCode(k).name}: {sorted(v)}")
+            log.info(f"{ToyTextSoftExtractionReturnCode(k).name}: {sorted(v)}")
 
-    log.info(f"Win rate list: {win_rate_list}")
-    log.info(f"Average win rate: {np.array(win_rate_list).mean()}")
-    log.info(f"Win rate std: {np.array(win_rate_list).std()}")
+    log.info(f"Average asp coverage: {np.array(asp_coverage_list).mean()}")
+    log.info(
+        f"Average policy error compared to Q: {np.array(policy_error_cmp_to_q_list).mean()}"
+    )
 
     with open("eval.json", "w") as f:
         json.dump(json_dict, f, indent=4)
 
     return {
-        "total_success_runs": len(win_rate_list),
-        "avg_win_rate": np.array(win_rate_list).mean(),
+        "total_finish_runs": len(
+            ret_dict[ToyTextSoftExtractionReturnCode.SOFT_EXTRACTION_FINISH]
+        ),
+        "avg_asp_coverage": np.array(asp_coverage_list).mean(),
+        "avg_policy_error_cmp_to_q": np.array(
+            policy_error_cmp_to_q_list
+        ).mean(),
     }
 
 
@@ -631,13 +488,12 @@ def run_eval(cfg: DictConfig) -> None:
     keyboard_interrupt = None
 
     try:
-        avg_win_rate = post_train_eval(eval_cfg)
+        ret_dict = post_train_eval(eval_cfg)
         if use_discord_webhook:
             msg_body = f"Success!\n"
-            msg_body += (
-                f"Total success runs: {avg_win_rate['total_success_runs']}\n"
-            )
-            msg_body += f"Average win rate: {avg_win_rate['avg_win_rate']}"
+            msg_body += f"Total success runs: {ret_dict['total_finish_runs']}\n"
+            msg_body += f"Average win rate: {ret_dict['avg_asp_coverage']}\n"
+            msg_body += f"Average policy error compared to Q: {ret_dict['avg_policy_error_cmp_to_q']}"
     except BaseException as e:
         if use_discord_webhook:
             if isinstance(e, KeyboardInterrupt):
@@ -662,6 +518,8 @@ def run_eval(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    torch.set_warn_always(False)
+
     import multiprocessing as mp
 
     if mp.get_start_method() != "fork":

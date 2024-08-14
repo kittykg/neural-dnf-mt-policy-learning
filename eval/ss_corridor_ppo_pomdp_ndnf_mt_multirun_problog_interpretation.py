@@ -49,7 +49,7 @@ log = logging.getLogger()
 
 def simulate_fn(
     envs: gym.vector.SyncVectorEnv,
-    model: SSCPPONDNFBasedAgent,
+    model: SSCPPONDNFMutexTanhAgent,
     process_obs=Callable[[dict], Tensor],
     num_episodes=NUM_EPISODES,
 ) -> dict[str, Any]:

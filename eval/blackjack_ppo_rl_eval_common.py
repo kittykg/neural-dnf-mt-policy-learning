@@ -149,7 +149,12 @@ def ndnf_based_agent_cmp_target_csv(
         actions, tanh_actions = agent.get_actions(
             preprocessed_obs=obs_dict, use_argmax=True
         )
+        action_distribution = agent.get_action_distribution(
+            preprocessed_obs=obs_dict
+        ).probs
+
         logs["actions"] = actions
+        logs["action_distribution"] = action_distribution.cpu().numpy()  # type: ignore
         dst.update(actions)
 
     tanh_actions_discretised = np.count_nonzero(tanh_actions > 0, axis=1)

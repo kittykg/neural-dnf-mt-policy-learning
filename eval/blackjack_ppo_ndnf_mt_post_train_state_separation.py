@@ -111,7 +111,7 @@ def post_training(
 
         criteria_a = (
             og_log["policy_error_cmp_to_q"] - new_log["policy_error_cmp_to_q"]
-            <= t_a
+            >= -t_a
         )
         criteria_b = (
             np.count_nonzero(og_log["actions"] != new_log["actions"])

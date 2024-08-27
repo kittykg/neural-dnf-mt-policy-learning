@@ -1,7 +1,5 @@
-# This script interprets the NDNF-MT actor trained on the Blackjack environment.
-# We extract a weighted logic equation and ProbLog rules based on the trained
-# model. The weighted logic equation provides insight of the layer itself, while
-# the ProbLog rules can be used for inference as well.
+# This script interprets the NDNF-MT agent trained on POMDP SpecialStateCorridor
+# envs, i.e. using wall status as observation of agent
 import json
 import logging
 from pathlib import Path
@@ -10,9 +8,8 @@ import sys
 import traceback
 from typing import Any
 
-import numpy as np
-
 import hydra
+import numpy as np
 from omegaconf import DictConfig
 import torch
 
@@ -27,41 +24,40 @@ except ValueError:  # Already removed
     pass
 
 
-from blackjack_common import (
+from ss_corridor_ppo import (
     construct_model,
-    get_target_policy,
-    BlackjackNDNFMutexTanhAgent,
-    blackjack_env_preprocess_obss,
+    construct_single_environment,
+    SSCPPONDNFMutexTanhAgent,
 )
-from eval.blackjack_ppo_ndnf_mt_post_train_soft_extraction import (
-    SECOND_PRUNE_MODEL_PTH_NAME,
-)
+
 from eval.ndnf_mt_problog_interpretation import (
     logical_condensation,
     rule_simplification_with_all_possible_states,
     problog_rule_generation,
+)
+from eval.ss_corridor_ppo_pomdp_ndnf_multirun_eval import (
+    SECOND_PRUNE_MODEL_PTH_NAME,
 )
 from utils import post_to_discord_webhook
 
 
 DEFAULT_GEN_SEED = 2
 DEVICE = torch.device("cpu")
-BASE_STORAGE_DIR = root / "blackjack_ppo_storage"
+BASE_STORAGE_DIR = root / "ssc_ppo_storage"
 
 log = logging.getLogger()
 
 
 def interpret(
-    model: BlackjackNDNFMutexTanhAgent,
-    target_policy_csv_path: Path,
+    model: SSCPPONDNFMutexTanhAgent,
     model_dir: Path,
 ) -> dict[str, Any]:
-    # Load second prune after thresholding
-    # Check for checkpoints first
+    # Load from second prune after thresholding
+    # Check for checkpoints first, this should exist
     assert (
         model_dir / SECOND_PRUNE_MODEL_PTH_NAME
     ).exists(), (
-        "Please run the soft extraction first before interpret the model."
+        "No 2nd pruned model found, please run the multirun_eval script first"
     )
 
     pruned_state = torch.load(
@@ -98,13 +94,14 @@ def interpret(
     # - This step is optional if we cannot enumerate all possible observations.
     # If we can we can reduce the number of conjunctions required in the
     # weighted logic equations.
-    target_policy = get_target_policy(target_policy_csv_path)
-    preprocessed_obs = blackjack_env_preprocess_obss(
-        np.array(list(target_policy.keys())).T, True, DEVICE  # type: ignore
-    )
-    input_tensor = preprocessed_obs["decode_input"]
-    input_tensor = input_tensor.to(DEVICE)
-
+    input_tensor = torch.Tensor(
+        [
+            [-1, -1],  # no wall on either side
+            [1, -1],  # wall on the left
+            [-1, 1],  # wall on the right
+        ],
+        device=DEVICE,
+    ).float()
     rule_simplification_dict = rule_simplification_with_all_possible_states(
         ndnf_mt, input_tensor, condensation_dict, disj_bias
     )
@@ -128,33 +125,33 @@ def interpret(
 
 
 def post_train_interpret(eval_cfg: DictConfig):
-    experiment_name = f"{eval_cfg['experiment_name']}"
+    experiment_name = eval_cfg["experiment_name"]
     use_ndnf = "ndnf" in experiment_name
 
-    assert use_ndnf and not eval_cfg["use_eo"] and eval_cfg["use_mt"]
+    assert use_ndnf
 
-    target_policy_csv_path = Path(eval_cfg["target_policy_csv_path"])
-    if not target_policy_csv_path.exists():
-        raise FileNotFoundError(
-            f"The target policy csv file {target_policy_csv_path} does not exist!"
-        )
+    use_state_no_as_obs = "sn" in experiment_name
+    assert not use_state_no_as_obs, "Has to use wall status as observation"
+
+    single_env = construct_single_environment(eval_cfg)
+    num_inputs = single_env.corridor_length if use_state_no_as_obs else 2
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
         model = construct_model(
+            num_inputs=num_inputs,
             num_latent=eval_cfg["model_latent_size"],
+            action_size=int(single_env.action_space.n),
             use_ndnf=use_ndnf,
-            use_decode_obs=True,
-            use_eo=False,
-            use_mt=True,
-            share_layer_with_critic=eval_cfg["share_layer_with_critic"],
+            use_eo="eo" in experiment_name,
+            use_mt="mt" in experiment_name,
         )
-        assert isinstance(model, BlackjackNDNFMutexTanhAgent)
+        assert isinstance(model, SSCPPONDNFMutexTanhAgent)
         model.to(DEVICE)
 
         log.info(f"Interpretation of {model_dir.name}:")
-        ret = interpret(model, target_policy_csv_path, model_dir)
+        ret = interpret(model, model_dir)
         with open(model_dir / "interpretation.json", "w") as f:
             json.dump(ret, f, indent=4)
 
@@ -201,7 +198,7 @@ def run_eval(cfg: DictConfig) -> None:
             webhook_url = cfg["webhook"]["discord_webhook_url"]
             post_to_discord_webhook(
                 webhook_url=webhook_url,
-                experiment_name=eval_cfg["experiment_name"],
+                experiment_name=f"{eval_cfg['experiment_name']} Multirun Eval",
                 message_body=msg_body,
                 errored=errored,
                 keyboard_interrupt=keyboard_interrupt,

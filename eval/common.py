@@ -1,4 +1,14 @@
+from dataclasses import dataclass
 from enum import IntEnum
+
+
+# This dataclass is the same as the Atom class 'privately' defined in the
+# `neural-ndnf` library post-training and is used for ProbLog interpretation
+@dataclass
+class Atom:
+    id: int
+    positive: bool
+    type: str  # possible values: "input", "conjunction", "disjunction_head"
 
 
 class ToyTextSoftExtractionReturnCode(IntEnum):

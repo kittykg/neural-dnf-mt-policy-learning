@@ -1,4 +1,28 @@
+from dataclasses import dataclass
 from enum import IntEnum
+
+
+# This dataclass is the same as the Atom class 'privately' defined in the
+# `neural-ndnf` library post-training and is used for ProbLog interpretation
+@dataclass
+class Atom:
+    id: int
+    positive: bool
+    type: str  # possible values: "input", "conjunction", "disjunction_head"
+
+
+class ToyTextSoftExtractionReturnCode(IntEnum):
+    # After training
+    AFTER_TRAIN_NO_ABNORMAL_STATES = 1  # ideal
+    # Pruning codes
+    AFTER_PRUNE_NO_ABNORMAL_STATES = 2  # ideal
+    FAIL_AT_PRUNE_MISS_ACTION = -1  # failure code
+    FAIL_AT_PRUNE_NOT_ME = -2  # failure code
+    # Threshold codes
+    THRESHOLD_HAS_PERFECT_CANDIDATE = 3  # ideal
+    THRESHOLD_IMPERFECT_CANDIDATE = 4  # suboptimal
+    # Finish code
+    SOFT_EXTRACTION_FINISH = 5
 
 
 class ToyTextEnvFailureCode(IntEnum):

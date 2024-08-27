@@ -48,6 +48,11 @@ NUM_EPISODES = 100
 DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "ssc_ppo_storage"
 
+FIRST_PRUNE_MODEL_PTH_NAME = "model_mr_pruned.pth"
+THRESHOLD_MODEL_PTH_NAME = "thresholded_model.pth"
+THRESHOLD_JSON_NAME = "threshold_val_candidates.json"
+SECOND_PRUNE_MODEL_PTH_NAME = "model_2nd_mr_pruned.pth"
+
 log = logging.getLogger()
 
 
@@ -219,14 +224,14 @@ def post_training(
     # Check for checkpoints
     # If the model is already pruned, then we load the pruned model
     # Otherwise, we prune the model and save the pruned model
-    if (model_dir / "model_mr_pruned.pth").exists():
+    if (model_dir / FIRST_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / "model_mr_pruned.pth", map_location=DEVICE
+            model_dir / FIRST_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(pruned_state)
     else:
         prune_model()
-        torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
+        torch.save(model.state_dict(), model_dir / FIRST_PRUNE_MODEL_PTH_NAME)
 
     post_prune_logs = _simulate_with_print(f"{base_stage_name} pruned")
 
@@ -297,22 +302,22 @@ def post_training(
             * torch.sign(og_conj_weight)
             * 6.0
         )
-        torch.save(model.state_dict(), model_dir / "thresholded_model.pth")
+        torch.save(model.state_dict(), model_dir / THRESHOLD_MODEL_PTH_NAME)
 
-    if (model_dir / "thresholded_model.pth").exists():
+    if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
         thresholded_state = torch.load(
-            model_dir / "thresholded_model.pth", map_location=DEVICE
+            model_dir / THRESHOLD_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(thresholded_state)
-    elif (model_dir / "threshold_val_candidates.json").exists():
-        with open(model_dir / "threshold_val_candidates.json", "r") as f:
+    elif (model_dir / THRESHOLD_JSON_NAME).exists():
+        with open(model_dir / THRESHOLD_JSON_NAME, "r") as f:
             threshold_json_dict = json.load(f)
             t_val = threshold_json_dict["threshold_val"]
         apply_threshold_with_candidate(t_val)
     else:
         t_val, kl = threshold_model()
         threshold_json_dict = {}
-        with open(model_dir / "threshold_val_candidates.json", "w") as f:
+        with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
             threshold_json_dict["threshold_val"] = t_val
             threshold_json_dict["kl"] = kl
             json.dump(threshold_json_dict, f)
@@ -335,14 +340,14 @@ def post_training(
     # Again, check for checkpoints first
     # If the model is already pruned, then we load the pruned model
     # Otherwise, we prune the model and save the pruned model
-    if (model_dir / "model_2nd_mr_pruned.pth").exists():
+    if (model_dir / SECOND_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / "model_2nd_mr_pruned.pth", map_location=DEVICE
+            model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(pruned_state)
     else:
         prune_model()
-        torch.save(model.state_dict(), model_dir / "model_2nd_mr_pruned.pth")
+        torch.save(model.state_dict(), model_dir / SECOND_PRUNE_MODEL_PTH_NAME)
 
     second_prune_logs = _simulate_with_print(f"{base_stage_name} 2nd prune")
     kl = kl_divergence(

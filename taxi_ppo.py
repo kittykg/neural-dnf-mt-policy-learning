@@ -174,7 +174,7 @@ def train_ppo(
     log.info(agent)
 
     # Optimizer setup
-    optimizer = optim.Adam(
+    optimizer = optim.adam.Adam(
         [
             {
                 "params": agent.actor.parameters(),

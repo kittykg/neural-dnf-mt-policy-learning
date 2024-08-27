@@ -498,6 +498,13 @@ class BlackjackNDNFMutexTanhAgent(BlackjackNDNFBasedAgent):
             "l_mt_ce2": l_mt_ce2,
         }
 
+    def to_ndnf_agent(self) -> BlackjackNDNFAgent:
+        """
+        Convert this agent to a BlackjackNDNFAgent.
+        """
+        ndnf_agent = BlackjackNDNFAgent(self.num_latent, self.use_decode_obs)
+        ndnf_agent.actor = self.actor.to_ndnf()
+        return ndnf_agent
 
 def construct_model(
     num_latent: int,

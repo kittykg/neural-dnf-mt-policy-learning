@@ -318,6 +318,9 @@ def problog_rule_generation(
         if conj_id in always_true or conj_id in always_false:
             continue
 
+        if conj_id not in used_conjunctions:
+            continue
+
         rule_head = f"conj_{conj_id}"
         rule_body = []
         for a in conjuncts:

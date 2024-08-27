@@ -1,3 +1,6 @@
+# This script evaluates the performance of the trained models on the Blackjack
+# environment and compare the actor to a target policy from Sutton and Barto's
+# book.
 from collections import OrderedDict
 import json
 import logging

@@ -1,4 +1,7 @@
-# This script interprets the NDNF-MT actor trained on the Blackjack environment
+# This script interprets the NDNF-MT actor trained on the Blackjack environment.
+# We extract a weighted logic equation and ProbLog rules based on the trained
+# model. The weighted logic equation provides insight of the layer itself, while
+# the ProbLog rules can be used for inference as well.
 from dataclasses import dataclass
 import json
 import logging

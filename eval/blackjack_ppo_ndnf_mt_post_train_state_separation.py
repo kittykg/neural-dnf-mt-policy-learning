@@ -1,5 +1,7 @@
-# This script soft-extract ASP rules from the NDNF MT model on the Blackjack
-# environment, based on the comparison result on a target Q-value table.
+# This script tries to extract ASP rules from the NDNF-MT actor trained on the
+# Blackjack environment, based on the comparison result on a target Q-value
+# table. It only considers the normal states (states that do not violate mutual
+# exclusivity and do not have missing actions) for the extraction process.
 from copy import deepcopy
 import json
 import logging
@@ -32,7 +34,6 @@ from neural_dnf.post_training import (
 
 from blackjack_common import (
     construct_model,
-    construct_single_environment,
     get_target_policy,
     BlackjackNDNFMutexTanhAgent,
 )
@@ -42,12 +43,10 @@ from utils import post_to_discord_webhook
 
 
 DEFAULT_GEN_SEED = 2
-BLACKJACK_SINGLE_ENV_NUM_EPISODES = 500
 DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "blackjack_ppo_storage"
 
 log = logging.getLogger()
-single_env = construct_single_environment()
 
 
 def post_training(

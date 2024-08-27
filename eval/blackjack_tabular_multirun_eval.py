@@ -1,3 +1,4 @@
+# This script evaluates the tabular agents trained on the Blackjack environment.
 import json
 import logging
 from pathlib import Path

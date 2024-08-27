@@ -1,5 +1,7 @@
-# This script soft-extract ASP rules from the NDNF MT model on the Blackjack
-# environment, based on the comparison result on a target Q-value table.
+# This script soft extracts (prune and threshold on conjunctions) the NDNF-MT
+# actor trained on the Blackjack environment, based on the comparison result on
+# a target Q-value table. This script is the pre-requisite for the problog
+# interpretation script.
 from copy import deepcopy
 import json
 import logging
@@ -28,7 +30,6 @@ from neural_dnf.post_training import prune_neural_dnf
 
 from blackjack_common import (
     construct_model,
-    construct_single_environment,
     get_target_policy,
     BlackjackNDNFMutexTanhAgent,
 )
@@ -37,7 +38,6 @@ from utils import post_to_discord_webhook
 
 
 DEFAULT_GEN_SEED = 2
-BLACKJACK_SINGLE_ENV_NUM_EPISODES = 500
 DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "blackjack_ppo_storage"
 
@@ -47,7 +47,6 @@ THRESHOLD_JSON_NAME = "soft_threshold_val_candidates.json"
 SECOND_PRUNE_MODEL_PTH_NAME = "model_soft_2nd_mr_pruned.pth"
 
 log = logging.getLogger()
-single_env = construct_single_environment()
 
 
 def post_training(

@@ -1,11 +1,10 @@
 experiment_name: taxi_distillation_ndnf_mt_actdist_nc64_e5e3
-multirun_seeds: ???
+multirun_seeds: [205, 309, 3369, 4312, 4641, 5866, 5874, 6892, 9062, 9783]
 
 # NDNF-based model construction
 model_type: mt
 num_conjunctions: 64
 use_decode_obs: False
-use_argmax_action: False
 
 # Choose either mlp/tab for distillation
 distillation_mlp:

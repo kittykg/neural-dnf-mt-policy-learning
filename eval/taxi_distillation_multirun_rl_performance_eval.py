@@ -224,7 +224,6 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
     assert "ndnf_mt" in experiment_name
 
     use_decode_obs = eval_cfg["use_decode_obs"]
-    use_argmax_action = eval_cfg["use_argmax_action"]
     model_type_str = eval_cfg["model_type"]
 
     model_type: BaseNeuralDNF = {
@@ -233,9 +232,6 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         "mt": NeuralDNFMutexTanh,
         "fmt": NeuralDNFFullMutexTanh,
     }[model_type_str]
-
-    if model_type_str == "eo" or model_type_str == "plain":
-        assert use_argmax_action, "argmax action must be True for EO and plain"
 
     target_q_table = None
     target_action_dist = None
@@ -257,10 +253,6 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         assert (
             eval_cfg["distillation_tab_q"]["tab_q_path"] is not None
         ), "Either mlp_model_path or tab_q_path must be provided"
-
-        assert (
-            use_argmax_action
-        ), "argmax action must be True when using Q table for distillation"
 
         tab_q_path_str = eval_cfg["distillation_tab_q"]["tab_q_path"]
         target_q_table = load_target_q_table(tab_q_path_str)

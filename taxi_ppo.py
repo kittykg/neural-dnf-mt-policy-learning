@@ -165,6 +165,7 @@ def train_ppo(
         ),
         critic_latent_1=training_cfg.get("critic_latent_1", 256),
         critic_latent_2=training_cfg.get("critic_latent_2", 64),
+        pretrained_critic=training_cfg.get("pretrained_critic", None),
         mlp_actor_disable_bias=training_cfg.get(
             "mlp_actor_disable_bias", False
         ),
@@ -174,7 +175,7 @@ def train_ppo(
     log.info(agent)
 
     # Optimizer setup
-    optimizer = optim.adam.Adam(
+    optimizer = optim.Adam(  # type: ignore
         [
             {
                 "params": agent.actor.parameters(),
@@ -318,6 +319,13 @@ def train_ppo(
         # Optimizing the policy and value network
         b_inds = np.arange(batch_size)
         clip_fracs = []
+
+        ent_coef = training_cfg["ent_coef"]
+        # Attempt: dynamically adjust entropy coefficient
+        # if isinstance(agent, TaxiEnvPPONDNFBasedAgent) and iteration >= 75:
+        #     # dynamically adjust the ent coef to encourage exploration
+        #     ent_coef = 0.1
+
         for _ in range(training_cfg["update_epochs"]):
             np.random.shuffle(b_inds)
             for start in range(0, batch_size, minibatch_size):
@@ -374,7 +382,7 @@ def train_ppo(
                 entropy_loss = entropy.mean()
                 loss = (
                     pg_loss
-                    - training_cfg["ent_coef"] * entropy_loss
+                    - ent_coef * entropy_loss
                     + v_loss * training_cfg["vf_coef"]
                 )
 
@@ -464,6 +472,7 @@ def train_ppo(
         writer.add_scalar(
             "charts/lr_critic", optimizer.param_groups[1]["lr"], global_step
         )
+        # writer.add_scalar("charts/ent_coef", ent_coef, global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)  # type: ignore
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)  # type: ignore
         writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)  # type: ignore

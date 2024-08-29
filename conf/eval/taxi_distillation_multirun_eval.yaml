@@ -1,0 +1,21 @@
+experiment_name: taxi_distillation_ndnf_mt_actdist_nc64_e5e3
+multirun_seeds: ???
+
+# NDNF-based model construction
+model_type: mt
+num_conjunctions: 64
+use_decode_obs: False
+use_argmax_action: False
+
+# Choose either mlp/tab for distillation
+distillation_mlp:
+  actor_latent_size: 256
+  use_ndnf: False
+  use_decode_obs: False
+  share_layer_with_critic: False
+  critic_latent_1: 256
+  critic_latent_2: 256
+  mlp_actor_disable_bias: True
+  mlp_model_path: null # TO BE FILLED
+distillation_tab_q:
+  tab_q_path: null # TO BE FILLED

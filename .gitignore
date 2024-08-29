@@ -170,6 +170,7 @@ outputs/
 
 # Models and result logs
 *_ppo_storage/
+taxi_distillation_storage/
 results/
 
 # Unless specified, we ignore all notebooks for now

@@ -39,7 +39,7 @@ def single_model_eval(
     full_experiment_name: str,
     target_policy_csv_path: Path,
     device: torch.device,
-):
+) -> dict[str, Any]:
     use_ndnf = "ndnf" in full_experiment_name
     if isinstance(model, BlackjackNDNFEOAgent):
         eval_model = model.to_ndnf_agent()
@@ -319,6 +319,8 @@ def run_eval(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    torch.set_warn_always(False)
+
     import multiprocessing as mp
 
     if mp.get_start_method() != "fork":

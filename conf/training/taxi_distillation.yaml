@@ -13,12 +13,13 @@ weight_init_type: x_normal
 
 # Choose either mlp/tab for distillation
 distillation_mlp:
-  actor_latent_size: 512
+  actor_latent_size: 256
   use_ndnf: False
   use_decode_obs: False
-  share_layer_with_critic: True
-  critic_latent_1: 512
-  critic_latent_2: null
+  share_layer_with_critic: False
+  critic_latent_1: 256
+  critic_latent_2: 256
+  mlp_actor_disable_bias: True
   mlp_model_path: null # TO BE FILLED
 distillation_tab_q:
   tab_q_path: null # TO BE FILLED

@@ -12,6 +12,11 @@ use_mt: True
 share_layer_with_critic: False
 track_gradients: True
 
+# Uncomment to load a critic
+# pretrained_critic:
+#   model_path: null
+#   disable_critic_training: False
+
 critic_latent_1: 256
 critic_latent_2: 256
 
@@ -33,9 +38,9 @@ aux_loss:
 #   disable_critic_training: True
 
 total_timesteps: 5e6
-lr_actor: 2e-5
-lr_critic: 2e-4
-num_envs: 64
+lr_actor: 1e-4
+lr_critic: 1e-3
+num_envs: 8
 num_steps: 2048
 anneal_lr: True
 gamma: 0.999
@@ -45,7 +50,7 @@ update_epochs: 8
 norm_adv: True
 clip_coef: 0.2
 clip_vloss: True
-ent_coef: 0.003
+ent_coef: 0.05
 vf_coef: 5
 max_grad_norm: 0.5
 target_kl: null

@@ -4,8 +4,6 @@ import random
 import traceback
 from typing import Any
 
-import gymnasium as gym
-from gymnasium.vector import SyncVectorEnv
 import hydra
 from hydra.core.hydra_config import HydraConfig
 import numpy as np
@@ -13,7 +11,6 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 from torch import Tensor
 from torch.distributions.categorical import Categorical
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 import wandb
 
@@ -26,6 +23,10 @@ from neural_dnf.neural_dnf import (
     NeuralDNFFullMutexTanh,
 )
 from neural_dnf.utils import DeltaDelayedExponentialDecayScheduler
+from eval.taxi_distillation_rl_eval_common import (
+    eval_on_environments,
+    eval_on_all_possible_states,
+)
 from taxi_common import (
     N_OBSERVATION_SIZE,
     N_DECODE_OBSERVATION_SIZE,
@@ -41,6 +42,7 @@ log = logging.getLogger()
 
 
 TAXI_ENV_POSSIBLE_STATES, _ = split_all_states_to_reachable_and_non()
+STORAGE_DIR = Path(__file__).parent / "taxi_distillation_storage"
 
 
 class TaxiDistillationDataset(Dataset):
@@ -424,7 +426,7 @@ def train(
     )
     ndnf_model.set_delta_val(train_cfg["dds"]["initial_delta"])
 
-    optimizer = torch.optim.adam.Adam(
+    optimizer = torch.optim.Adam(  # type: ignore
         ndnf_model.parameters(), lr=train_cfg["lr"]
     )
 
@@ -558,7 +560,7 @@ def train(
         for k, v in post_train_eval_log.items():
             if isinstance(v, bool):
                 wandb_log[f"eval/{k}"] = int(v)
-            elif isinstance(v, (list, Tensor)):
+            elif isinstance(v, (list, Tensor, np.ndarray)):
                 continue
             else:
                 wandb_log[f"eval/{k}"] = v
@@ -567,218 +569,12 @@ def train(
     return ndnf_model, post_train_eval_log
 
 
-def eval_get_ndnf_action(
-    ndnf_model: BaseNeuralDNF, obs: np.ndarray, device: torch.device
-) -> tuple[Tensor, Tensor]:
-    preprocessed_obs = taxi_env_preprocess_obs(
-        obs, use_ndnf=True, device=device
-    )
-    if ndnf_model.conjunctions.weights.data.shape[1] == N_OBSERVATION_SIZE:
-        obs_key = "input"
-    else:
-        obs_key = "decode_input"
-    x = preprocessed_obs[obs_key]
-
-    with torch.no_grad():
-        if isinstance(ndnf_model, BaseNeuralDNFMutexTanh):
-            all_form_dict = ndnf_model.get_all_forms(x)
-            action_dist = (all_form_dict["disjunction"]["mutex_tanh"] + 1) / 2
-            action = torch.argmax(action_dist, dim=1)
-            tanh_out = all_form_dict["disjunction"]["tanh"]
-        else:
-            out = ndnf_model(x)
-            action = torch.argmax(out, dim=1)
-            tanh_out = torch.tanh(out)
-
-    return action, tanh_out
-
-
-def eval_get_ndnf_mt_action_dist(
-    ndnf_model: BaseNeuralDNFMutexTanh, obs: np.ndarray, device: torch.device
-) -> Categorical:
-    preprocessed_obs = taxi_env_preprocess_obs(
-        obs, use_ndnf=True, device=device
-    )
-    if ndnf_model.conjunctions.weights.data.shape[1] == N_OBSERVATION_SIZE:
-        obs_key = "input"
-    else:
-        obs_key = "decode_input"
-    x = preprocessed_obs[obs_key]
-
-    with torch.no_grad():
-        action_dist = (ndnf_model(x) + 1) / 2
-    return Categorical(probs=action_dist)
-
-
-def eval_on_environments(
-    ndnf_model: BaseNeuralDNF,
-    device: torch.device,
-    num_episodes: int = 100,
-) -> dict[str, Any]:
-    # Convert any non-plain NDNF to plain NDNF
-    if (
-        isinstance(ndnf_model, NeuralDNFEO)
-        or isinstance(ndnf_model, NeuralDNFMutexTanh)
-        or isinstance(ndnf_model, NeuralDNFFullMutexTanh)
-    ):
-        plain_ndnf_model: NeuralDNF = ndnf_model.to_ndnf()
-    else:
-        assert isinstance(ndnf_model, NeuralDNF)
-        plain_ndnf_model: NeuralDNF = ndnf_model
-
-    plain_ndnf_model.to(device)
-
-    num_frames_per_episode = []
-    return_per_episode = []
-
-    logs: dict[str, Any] = {
-        "env_eval_mutual_exclusivity": True,
-        "env_eval_missing_actions": False,
-        "env_eval_has_truncation": False,
-    }
-
-    num_processes = 8
-    envs = SyncVectorEnv(
-        [
-            lambda: gym.make("Taxi-v3", render_mode="rgb_array")
-            for _ in range(num_processes)
-        ]
-    )
-    obs = envs.reset()[0]
-
-    log_done_counter = 0
-    log_episode_return = torch.zeros(num_processes, device=device)
-    log_episode_num_frames = torch.zeros(num_processes, device=device)
-
-    while log_done_counter < num_episodes:
-        with torch.no_grad():
-            actions, tanh_out = eval_get_ndnf_action(
-                plain_ndnf_model, obs, device
-            )
-
-        tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
-        if np.any(tanh_action > 1):
-            logs["env_eval_mutual_exclusivity"] = False
-        if np.any(tanh_action == 0):
-            logs["env_eval_missing_actions"] = True
-
-        obs, reward, terminated, truncated, _ = envs.step(actions.numpy())
-        if np.any(truncated):
-            logs["env_eval_has_truncation"] = True
-        done = tuple(a | b for a, b in zip(terminated, truncated))  # type: ignore
-
-        log_episode_return += torch.tensor(
-            reward, device=device, dtype=torch.float
-        )
-        log_episode_num_frames += torch.ones(num_processes, device=device)
-
-        for i, d in enumerate(done):
-            if d:
-                log_done_counter += 1
-                return_per_episode.append(log_episode_return[i].item())
-                num_frames_per_episode.append(log_episode_num_frames[i].item())
-
-        mask = 1 - torch.tensor(done, device=device, dtype=torch.float)
-        log_episode_return *= mask
-        log_episode_num_frames *= mask
-
-    # Calculate the sparsity of the model
-    p_t = torch.cat(
-        [
-            parameter.view(-1)
-            for parameter in plain_ndnf_model.parameters()
-            if parameter.requires_grad
-        ]
-    )
-
-    logs["avg_l1_mod_aux"] = (
-        torch.abs(p_t * (6 - torch.abs(p_t))).sum() / p_t.numel()
-    ).item()
-    logs["env_eval_avg_return_per_episode"] = float(np.mean(return_per_episode))
-    logs["env_eval_avg_num_frames_per_episode"] = float(
-        np.mean(num_frames_per_episode)
-    )
-
-    return logs
-
-
-def eval_on_all_possible_states(
-    ndnf_model: BaseNeuralDNF,
-    device: torch.device,
-    target_q_table: np.ndarray | None = None,
-    target_action_dist: Categorical | None = None,
-):
-    # By default, if target_q_table is provided, we prioritise using it with
-    # argmax action
-    # If target_action_dist is provided, we can choose whether compute the
-    # policy error with argmax action and compute the KL divergence between the
-    # model's action distribution and the target action distribution
-    assert (
-        target_q_table is not None or target_action_dist is not None
-    ), "Either target_q_table or target_action_dist must be provided"
-
-    # Convert NDNF-EO to plain NDNF
-    if isinstance(ndnf_model, NeuralDNFEO):
-        plain_ndnf_model = ndnf_model.to_ndnf()
-    else:
-        plain_ndnf_model = ndnf_model
-
-    plain_ndnf_model.to(device)
-
-    logs: dict[str, Any] = {
-        "states_mutual_exclusivity": True,
-        "states_missing_actions": False,
-    }
-
-    with torch.no_grad():
-        actions, tanh_out = eval_get_ndnf_action(
-            plain_ndnf_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
-        )
-    tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
-    if np.any(tanh_action > 1):
-        logs["states_mutual_exclusivity"] = False
-    if np.any(tanh_action == 0):
-        logs["states_missing_actions"] = True
-
-    # Calculate the policy error
-    if target_q_table is not None:
-        target_q_argmax_actions = np.argmax(target_q_table, axis=1)
-        policy_error = np.where(actions.numpy() != target_q_argmax_actions)[0]
-        policy_error_rate = np.count_nonzero(
-            actions.numpy() != target_q_argmax_actions
-        ) / len(actions)
-    else:
-        # target_action_dist is not None
-        assert target_action_dist is not None
-        target_action_dist_probs = target_action_dist.probs.numpy()  # type: ignore
-        target_action_dist_argmax = np.argmax(target_action_dist_probs, axis=1)
-        policy_error = np.where(actions.numpy() != target_action_dist_argmax)[0]
-        policy_error_rate = np.count_nonzero(
-            actions.numpy() != target_action_dist_argmax
-        ) / len(actions)
-        if isinstance(plain_ndnf_model, BaseNeuralDNFMutexTanh):
-            action_dist = eval_get_ndnf_mt_action_dist(
-                plain_ndnf_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
-            )
-            kl_div = F.kl_div(
-                action_dist.probs, target_action_dist.probs  # type: ignore
-            ).mean()
-            logs["kl_div"] = kl_div.item()
-
-    logs["policy_error_cmp_target"] = policy_error
-    logs["policy_error_rate_cmp_target"] = policy_error_rate
-    logs["states_model_actions"] = actions
-    logs["states_model_tanh_out"] = tanh_out
-
-    return logs
-
-
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def run_experiment(cfg: DictConfig) -> None:
     train_cfg = cfg["training"]
     seed = train_cfg["seed"]
     if seed is None:
-        seed = random.randint(0, 1000000)
+        seed = random.randint(0, 10000)
     full_experiment_name = train_cfg["experiment_name"] + f"_{seed}"
 
     use_wandb = cfg["wandb"]["use_wandb"]
@@ -815,7 +611,11 @@ def run_experiment(cfg: DictConfig) -> None:
 
     try:
         ndnf_model, eval_log = train(train_cfg, use_wandb)
-        torch.save(ndnf_model.state_dict(), f"{full_experiment_name}.pt")
+        model_dir = STORAGE_DIR / full_experiment_name
+        if not model_dir.exists() or not model_dir.is_dir():
+            model_dir.mkdir(parents=True, exist_ok=True)
+        model_path = model_dir / "model.pth"
+        torch.save(ndnf_model.state_dict(), model_path)
 
         if use_discord_webhook:
             msg_body = "Success!\n"

@@ -49,6 +49,7 @@ from utils import post_to_discord_webhook
 DEFAULT_GEN_SEED = 2
 DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "taxi_distillation_storage"
+EVAL_ENV_NUM_EPISODES = 100
 
 FIRST_PRUNE_MODEL_PTH_NAME = "model_soft_mr_pruned.pth"
 THRESHOLD_MODEL_PTH_NAME = "soft_thresholded_model.pth"
@@ -75,6 +76,7 @@ def post_training(
         env_eval_logs = eval_on_environments(
             ndnf_model=model,
             device=DEVICE,
+            num_episodes=EVAL_ENV_NUM_EPISODES,
         )
         return {**states_eval_logs, **env_eval_logs}
 

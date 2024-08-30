@@ -103,7 +103,6 @@ def interpret(
         np.array(list(target_policy.keys())).T, True, DEVICE  # type: ignore
     )
     input_tensor = preprocessed_obs["decode_input"]
-    input_tensor = input_tensor.to(DEVICE)
 
     rule_simplification_dict = rule_simplification_with_all_possible_states(
         ndnf_mt, input_tensor, condensation_dict, disj_bias

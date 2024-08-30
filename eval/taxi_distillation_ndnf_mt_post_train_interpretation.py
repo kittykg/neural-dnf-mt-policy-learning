@@ -10,9 +10,8 @@ import sys
 import traceback
 from typing import Any
 
-import numpy as np
-
 import hydra
+import numpy as np
 from omegaconf import DictConfig
 import torch
 
@@ -102,7 +101,7 @@ def interpret(
     preprocessed_obs = taxi_env_preprocess_obs(
         np.array(TAXI_ENV_POSSIBLE_STATES), use_ndnf=True, device=DEVICE
     )
-    if ndnf_mt.conjunctions.weights.data.shape[1] == N_DECODE_OBSERVATION_SIZE:
+    if ndnf_mt.conjunctions.weights.data.shape[1] == N_OBSERVATION_SIZE:
         obs_key = "input"
     else:
         obs_key = "decode_input"

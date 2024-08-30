@@ -33,6 +33,8 @@ from neural_dnf.post_training import prune_neural_dnf
 
 from eval.taxi_distillation_rl_eval_common import (
     eval_on_all_possible_states,
+    eval_on_environments,
+    EnvEvalLogKeys,
     StateEvalLogKeys,
 )
 from taxi_common import N_ACTIONS, N_OBSERVATION_SIZE, N_DECODE_OBSERVATION_SIZE
@@ -63,22 +65,37 @@ def post_training(
     target_action_dist: Categorical | None = None,
 ) -> dict[str, Any]:
     # Helper functions
-    def _simulate_with_print(model_name: str) -> dict[str, Any]:
-        logs = eval_on_all_possible_states(
+    def _eval() -> dict[str, Any]:
+        states_eval_logs = eval_on_all_possible_states(
             ndnf_model=model,
             device=DEVICE,
             target_q_table=target_q_table,
             target_action_dist=target_action_dist,
         )
+        env_eval_logs = eval_on_environments(
+            ndnf_model=model,
+            device=DEVICE,
+        )
+        return {**states_eval_logs, **env_eval_logs}
+
+    def _simulate_with_print(model_name: str) -> dict[str, Any]:
+        logs = _eval()
         log.info(f"Model: {model_name}")
         log.info(
-            f"No. ME violations: {logs.get(StateEvalLogKeys.ME_COUNT.value, 0)}"
+            "Has truncation in environment: "
+            f"{logs[EnvEvalLogKeys.HAS_TRUNC.value]}"
         )
         log.info(
-            f"No. missing actions: {logs.get(StateEvalLogKeys.MA_COUNT.value, 0)}"
+            "No. ME violations (all states): "
+            f"{logs.get(StateEvalLogKeys.ME_COUNT.value, 0)}"
         )
         log.info(
-            f"Policy error compared to target: {logs[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value]}"
+            "No. missing actions (all states): "
+            f"{logs.get(StateEvalLogKeys.MA_COUNT.value, 0)}"
+        )
+        log.info(
+            "Policy error compared to target: "
+            f"{logs[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value]}"
         )
         return logs
 
@@ -91,6 +108,11 @@ def post_training(
         log.info("Pruning the model...")
 
         def pruning_cmp_fn(og_log, new_log):
+            # Need to guarantee that the environment is not truncated
+            env_trunc = new_log[EnvEvalLogKeys.HAS_TRUNC.value]
+            if env_trunc:
+                return False
+
             # Check if the action distribution is close
             # We don't use kl divergence just yet
             og_action_dist = og_log[StateEvalLogKeys.ACTION_DISTRIBUTION.value]
@@ -107,13 +129,8 @@ def post_training(
             log.info(f"Pruning iteration: {prune_count + 1}")
             prune_result_dict = prune_neural_dnf(
                 model,
-                eval_on_all_possible_states,
-                {
-                    "ndnf_model": model,
-                    "device": DEVICE,
-                    "target_q_table": target_q_table,
-                    "target_action_dist": target_action_dist,
-                },
+                _eval,
+                {},
                 pruning_cmp_fn,
                 options={
                     "skip_prune_disj_with_empty_conj": False,
@@ -213,8 +230,11 @@ def post_training(
             result_dicts.append(r)
 
         log.info("Proceed to threshold based on KL...")
+        filtered_result_dicts = [
+            d for d in result_dicts if not d[EnvEvalLogKeys.HAS_TRUNC.value]
+        ]
         second_sorted_result_dict = sorted(
-            result_dicts,
+            filtered_result_dicts,
             key=lambda d: (
                 d["kl"],
                 d[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value],
@@ -321,6 +341,9 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
 
     policy_error_cmp_to_target_list: list[float] = []
 
+    log.info(f"Start soft extraction on {experiment_name}")
+    log.info("======================================")
+
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
@@ -346,7 +369,8 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         policy_error_cmp_to_target_list.append(
             ret[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value]
         )
-        log.info("======================================\n")
+        log.info("======================================")
+        log.info("======================================")
 
     log.info(
         f"Average policy error compared to target: {np.array(policy_error_cmp_to_target_list).mean()}"

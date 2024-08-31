@@ -288,8 +288,10 @@ def eval_on_all_possible_states(
         ) / len(actions)
         if isinstance(eval_model, BaseNeuralDNFMutexTanh):
             kl_div = F.kl_div(
-                action_dist.probs, target_action_dist.probs  # type: ignore
-            ).mean()
+                input=torch.log(action_dist.probs + 1e-8),  # type: ignore
+                target=target_action_dist.probs,  # type: ignore
+                reduction="batchmean",
+            )
             logs[StateEvalLogKeys.KL_DIV.value] = kl_div.item()
 
     logs[StateEvalLogKeys.POLICY_ERROR_CMP_TARGET.value] = policy_error

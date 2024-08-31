@@ -229,8 +229,12 @@ def _loss_calculation_mt(
     all_forms_dict = ndnf_model.get_all_forms(input)
 
     probs = (all_forms_dict["disjunction"]["mutex_tanh"] + 1) / 2
-    log_probs = torch.log(probs + 1e-8)
-    base_loss = criterion(log_probs, target)
+    if isinstance(criterion, torch.nn.KLDivLoss):
+        # KL div expects input to be log probabilities
+        log_probs = torch.log(probs + 1e-8)
+        base_loss = criterion(log_probs, target)
+    else:
+        base_loss = criterion(probs, target)
 
     # Weight regularization loss
     weight_reg_loss = _weight_reg_aux_loss(ndnf_model)
@@ -430,10 +434,20 @@ def train(
         ndnf_model.parameters(), lr=train_cfg["lr"]
     )
 
-    if isinstance(ndnf_model, BaseNeuralDNFMutexTanh) and not use_argmax_action:
-        criterion = torch.nn.KLDivLoss()
-    else:
+    if isinstance(ndnf_model, NeuralDNFEO):
         criterion = torch.nn.CrossEntropyLoss()
+    else:
+        criterion_fn_map = {
+            "kl": torch.nn.KLDivLoss(reduction="batchmean"),
+            "mse": torch.nn.MSELoss(),
+            "ce": torch.nn.CrossEntropyLoss(),
+        }
+        criterion_fn_str = train_cfg.get("criterion_fn", "kl")
+        assert (
+            criterion_fn_str in criterion_fn_map
+        ), "Invalid criterion function"
+
+        criterion = criterion_fn_map[criterion_fn_str]
 
     for epoch in range(int(train_cfg["epoch"])):
         loss_history = None

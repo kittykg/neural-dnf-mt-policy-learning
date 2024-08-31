@@ -230,14 +230,14 @@ def eval_on_all_possible_states(
         actions, tanh_out = eval_get_ndnf_action(
             eval_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
         )
-        logs[StateEvalLogKeys.ACTIONS.value] = actions.cpu().numpy()
-        logs[StateEvalLogKeys.TANH_OUT.value] = tanh_out.cpu().numpy()
+        logs[StateEvalLogKeys.ACTIONS.value] = actions
+        logs[StateEvalLogKeys.TANH_OUT.value] = tanh_out
 
         if isinstance(eval_model, BaseNeuralDNFMutexTanh):
             action_dist = eval_get_ndnf_mt_action_dist(
                 eval_model, np.array(TAXI_ENV_POSSIBLE_STATES), device
             )
-            logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value] = action_dist.probs.cpu().numpy()  # type: ignore
+            logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value] = action_dist.probs  # type: ignore
 
     tanh_actions_discretised = np.count_nonzero(tanh_out > 0, axis=1)
 

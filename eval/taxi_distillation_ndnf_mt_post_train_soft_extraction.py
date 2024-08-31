@@ -16,6 +16,7 @@ import numpy.typing as npt
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import torch
+import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
 
@@ -218,17 +219,29 @@ def post_training(
                 * torch.sign(og_conj_weight)
                 * 6.0
             )
-            r = eval_on_all_possible_states(
+            states_eval_log = eval_on_all_possible_states(
                 ndnf_model=model,
                 device=DEVICE,
                 target_q_table=target_q_table,
                 target_action_dist=target_action_dist,
             )
-            r["t_val"] = v.item()
-            r["kl"] = kl_divergence(
-                post_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value],
-                r[StateEvalLogKeys.ACTION_DISTRIBUTION.value],
+            env_eval_log = eval_on_environments(
+                ndnf_model=model,
+                device=DEVICE,
+                num_episodes=EVAL_ENV_NUM_EPISODES,
             )
+            r = {**states_eval_log, **env_eval_log}
+            r["t_val"] = v.item()
+            r["kl"] = F.kl_div(
+                input=torch.log(
+                    post_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value]
+                    + 1e-8
+                ),
+                target=states_eval_log[
+                    StateEvalLogKeys.ACTION_DISTRIBUTION.value
+                ],
+                reduction="batchmean",
+            ).item()
             result_dicts.append(r)
 
         log.info("Proceed to threshold based on KL...")
@@ -238,17 +251,27 @@ def post_training(
         second_sorted_result_dict = sorted(
             filtered_result_dicts,
             key=lambda d: (
-                d["kl"],
                 d[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value],
+                d["kl"],
             ),
         )
         best_candidate = second_sorted_result_dict[0]
         log.info(f"Best candidate: {best_candidate['t_val']}")
         log.info(f"KL: {best_candidate['kl']}")
+        log.info(
+            f"Policy error: {best_candidate[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value]}"
+        )
+        log.info(
+            f"Has truncation: {best_candidate[EnvEvalLogKeys.HAS_TRUNC.value]}"
+        )
 
         return {
             "t_val": best_candidate["t_val"],
             "kl": best_candidate["kl"],
+            "policy_error": best_candidate[
+                StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value
+            ],
+            "has_trunc": best_candidate[EnvEvalLogKeys.HAS_TRUNC.value],
         }
 
     # Check for checkpoints
@@ -280,9 +303,7 @@ def post_training(
         t_val = ret_dict["t_val"]
 
         with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
-            threshold_json_dict = {}
-            threshold_json_dict["threshold_val"] = t_val
-            json.dump(threshold_json_dict, f)
+            json.dump(ret_dict, f)
 
         apply_threshold_with_candidate(t_val)
 

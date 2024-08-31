@@ -289,7 +289,7 @@ def post_training(
     if (model_dir / THRESHOLD_JSON_NAME).exists():
         with open(model_dir / THRESHOLD_JSON_NAME, "r") as f:
             threshold_json_dict = json.load(f)
-        t_val = threshold_json_dict["threshold_val"]
+        t_val = threshold_json_dict["t_val"]
 
         if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
             thresholded_state = torch.load(

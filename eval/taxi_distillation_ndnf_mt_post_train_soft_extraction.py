@@ -12,7 +12,6 @@ import traceback
 from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import torch
@@ -32,6 +31,7 @@ except ValueError:  # Already removed
 from neural_dnf.neural_dnf import NeuralDNFMutexTanh
 from neural_dnf.post_training import prune_neural_dnf
 
+from eval.common import ToyTextSoftExtractionReturnCode
 from eval.taxi_distillation_rl_eval_common import (
     eval_on_all_possible_states,
     eval_on_environments,
@@ -65,7 +65,7 @@ def post_training(
     model_dir: Path,
     target_q_table: np.ndarray | None = None,
     target_action_dist: Categorical | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | ToyTextSoftExtractionReturnCode:
     # Helper functions
     def _eval() -> dict[str, Any]:
         states_eval_logs = eval_on_all_possible_states(
@@ -123,7 +123,7 @@ def post_training(
                 StateEvalLogKeys.ACTION_DISTRIBUTION.value
             ]
 
-            return np.allclose(og_action_dist, new_action_dist, atol=1e-2)
+            return np.allclose(og_action_dist, new_action_dist, atol=1e-3)
 
         sd_list = []
         prune_count = 0
@@ -188,18 +188,7 @@ def post_training(
     # 3. Thresholding
     og_conj_weight = model.conjunctions.weights.data.clone()
 
-    # calculate the kl divergence between two distributions p and q, where p is
-    # the true distribution (action dist after pruning) and q is the estimated
-    # distribution (thresholded action dist)
-    def kl_divergence(p: npt.NDArray, q: npt.NDArray) -> float:
-        return float(np.mean(np.where(p != 0, p * np.log(p / q), 0)))
-
-    # TODO: Check this
-    # Convert the agent to plain NDNF agent
-    # model = model.to_ndnf_agent()  # type: ignore
-    model.eval()
-
-    def threshold_model() -> dict[str, float]:
+    def threshold_model() -> dict[str, float] | ToyTextSoftExtractionReturnCode:
         log.info("Thresholding the model conjunction...")
 
         conj_min = torch.min(model.conjunctions.weights.data)
@@ -248,6 +237,10 @@ def post_training(
         filtered_result_dicts = [
             d for d in result_dicts if not d[EnvEvalLogKeys.HAS_TRUNC.value]
         ]
+        if len(filtered_result_dicts) == 0:
+            log.info("No candidates that finishes environments!")
+            return ToyTextSoftExtractionReturnCode.THRESHOLD_HAS_NO_CANDIDATE
+
         second_sorted_result_dict = sorted(
             filtered_result_dicts,
             key=lambda d: (
@@ -289,6 +282,10 @@ def post_training(
     if (model_dir / THRESHOLD_JSON_NAME).exists():
         with open(model_dir / THRESHOLD_JSON_NAME, "r") as f:
             threshold_json_dict = json.load(f)
+        if not threshold_json_dict["threshold_success"]:
+            log.info("Thresholding has no candidate!")
+            return ToyTextSoftExtractionReturnCode.THRESHOLD_HAS_NO_CANDIDATE
+
         t_val = threshold_json_dict["t_val"]
 
         if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
@@ -299,11 +296,20 @@ def post_training(
         else:
             apply_threshold_with_candidate(t_val)
     else:
-        ret_dict = threshold_model()
-        t_val = ret_dict["t_val"]
+        ret = threshold_model()
+        if isinstance(ret, ToyTextSoftExtractionReturnCode):
+            with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
+                json.dump(
+                    {"threshold_success": False},
+                    f,
+                )
+            return ret
+
+        t_val = ret["t_val"]
+        ret["threshold_success"] = True
 
         with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
-            json.dump(ret_dict, f)
+            json.dump(ret, f)
 
         apply_threshold_with_candidate(t_val)
 
@@ -324,10 +330,13 @@ def post_training(
         torch.save(model.state_dict(), model_dir / SECOND_PRUNE_MODEL_PTH_NAME)
 
     second_prune_logs = _simulate_with_print(f"NDNF MT Soft 2nd prune")
-    kl = kl_divergence(
-        post_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value],
-        second_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value],
-    )
+    kl = F.kl_div(
+        input=torch.log(
+            post_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value] + 1e-8
+        ),
+        target=second_prune_logs[StateEvalLogKeys.ACTION_DISTRIBUTION.value],
+        reduction="batchmean",
+    ).item()
     log.info(f"KL divergence cmp to after 1st prune: {kl}")
 
     return second_prune_logs
@@ -362,7 +371,11 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         tab_q_path_str = eval_cfg["distillation_tab_q"]["tab_q_path"]
         target_q_table = load_target_q_table(tab_q_path_str)
 
+    post_training_fail_runs: list[int] = []
+
+    avg_return_per_episode_list: list[float] = []
     policy_error_cmp_to_target_list: list[float] = []
+    truncated_runs: list[int] = []
 
     log.info(f"Start soft extraction on {experiment_name}")
     log.info("======================================")
@@ -389,20 +402,44 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         ret = post_training(
             model, model_dir, target_q_table, target_action_dist
         )
+        if isinstance(ret, ToyTextSoftExtractionReturnCode):
+            log.info(f"Experiment {model_dir.name} failed with code {ret.name}")
+            post_training_fail_runs.append(s)
+            continue
+
         policy_error_cmp_to_target_list.append(
             ret[StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value]
         )
+        avg_return_per_episode_list.append(
+            ret[EnvEvalLogKeys.AVG_RETURN_PER_EPISODE.value]
+        )
+        if ret[EnvEvalLogKeys.HAS_TRUNC.value]:
+            truncated_runs.append(s)
+
         log.info("======================================")
         log.info("======================================")
+
+    log.info(f"Failure runs: {post_training_fail_runs}")
+    if len(post_training_fail_runs) == len(eval_cfg["multirun_seeds"]):
+        log.info("All runs failed!")
+        return {
+            "all_runs_fail": True,
+        }
 
     log.info(
         f"Average policy error compared to target: {np.array(policy_error_cmp_to_target_list).mean()}"
     )
+    log.info(
+        f"Average return per episode: {np.array(avg_return_per_episode_list).mean()}"
+    )
+    log.info(f"Truncated runs: {truncated_runs}")
 
     return {
         "avg_policy_error_cmp_to_target": np.array(
             policy_error_cmp_to_target_list
         ).mean(),
+        "avg_return_per_episode": np.array(avg_return_per_episode_list).mean(),
+        "truncated_runs": truncated_runs,
     }
 
 
@@ -426,7 +463,8 @@ def run_eval(cfg: DictConfig) -> None:
         ret_dict = post_train_eval(eval_cfg)
         if use_discord_webhook:
             msg_body = f"Success!\n"
-            msg_body += f"Average policy error compared to target: {ret_dict['avg_policy_error_cmp_to_target']}"
+            for k, v in ret_dict.items():
+                msg_body += f"{k}: {v}\n"
     except BaseException as e:
         if use_discord_webhook:
             if isinstance(e, KeyboardInterrupt):

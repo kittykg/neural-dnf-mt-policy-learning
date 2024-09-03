@@ -21,6 +21,7 @@ class ToyTextSoftExtractionReturnCode(IntEnum):
     # Threshold codes
     THRESHOLD_HAS_PERFECT_CANDIDATE = 3  # ideal
     THRESHOLD_IMPERFECT_CANDIDATE = 4  # suboptimal
+    THRESHOLD_HAS_NO_CANDIDATE = -3  # failure code
     # Finish code
     SOFT_EXTRACTION_FINISH = 5
 

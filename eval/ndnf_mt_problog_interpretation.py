@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import sys
@@ -17,9 +18,18 @@ except ValueError:  # Already removed
 
 from neural_dnf import NeuralDNFMutexTanh
 
-from eval.common import Atom
 
 log = logging.getLogger()
+
+
+# This dataclass is the same as the Atom class 'privately' defined in the
+# `neural-ndnf` library post-training and is used for ProbLog interpretation
+@dataclass
+class Atom:
+    id: int
+    positive: bool
+    type: str  # possible values: "input", "conjunction", "disjunction_head"
+    map_to_id: int = -1  # used for remove duplication, -1 means no mapping
 
 
 # ==============================================================================
@@ -129,14 +139,40 @@ def logical_condensation(ndnf_mt: NeuralDNFMutexTanh) -> dict[str, Any]:
     # Check if there are duplicates in the conjunctions
     def check_duplicates(conjunction_map):
         duplicate_pairs = []
+        cycle_list = []
         for i, conjuncts in conjunction_map.items():
+            i_list = []
             for j, other_conjuncts in conjunction_map.items():
                 if i == j:
                     continue
                 if (i, j) in duplicate_pairs or (j, i) in duplicate_pairs:
                     continue
+                if (i, j) in cycle_list or (j, i) in cycle_list:
+                    continue
                 if conjuncts == other_conjuncts:
-                    duplicate_pairs.append((i, j))
+                    i_list.append(j)
+            # If i_list is not singleton, we will have 'cycle'
+            # For example, id 0 has i_list [1, 3] (dup pairs (0, 1), (0, 3))
+            # Then (1, 3) will also be valid duplicated pair, but we don't need
+            # to add it to the final duplicate pairs list. So we add it to cycle
+            # list to keep duplicate pairs list clean
+            if len(i_list) > 1:
+                # Compute all possible pairs using i_list
+                new_addition_to_cycle_list = []
+                for x in i_list:
+                    for y in i_list:
+                        if x == y:
+                            continue
+                        if (x, y) in new_addition_to_cycle_list or (
+                            y,
+                            x,
+                        ) in new_addition_to_cycle_list:
+                            continue
+                        new_addition_to_cycle_list.append((x, y))
+                cycle_list.extend(new_addition_to_cycle_list)
+
+            duplicate_pairs.extend([(i, j) for j in i_list])
+
         return duplicate_pairs
 
     duplicate_pairs = check_duplicates(conjunction_map)
@@ -152,7 +188,7 @@ def logical_condensation(ndnf_mt: NeuralDNFMutexTanh) -> dict[str, Any]:
     for _, disjuncts in disjunction_map.items():
         for a in disjuncts:
             if a.id in duplicate_mapping:
-                a.id = duplicate_mapping[a.id]
+                a.map_to_id = duplicate_mapping[a.id]
 
     used_conjunctions = list(conjunction_map.keys())
     # used conjunctions contain all the conjunctions but remove the duplications
@@ -164,6 +200,7 @@ def logical_condensation(ndnf_mt: NeuralDNFMutexTanh) -> dict[str, Any]:
         "disjunction_map": disjunction_map,
         "used_conjunctions": used_conjunctions,
         "duplicate_pairs": duplicate_pairs,
+        "duplicate_mapping": duplicate_mapping,
         "duplicate_mapping_reverse": duplicate_mapping_reverse,
     }
 
@@ -183,6 +220,7 @@ def rule_simplification_with_all_possible_states(
     # Since we know all the possible states, we can compute the truth table
     # with them
     used_conjunctions = condensation_dict["used_conjunctions"].copy()
+    duplicate_mapping = condensation_dict["duplicate_mapping"]
 
     with torch.no_grad():
         truth_table = torch.tanh(ndnf_mt.conjunctions(input_tensor)).sign()[
@@ -223,7 +261,12 @@ def rule_simplification_with_all_possible_states(
                 b += -1 * weight
                 continue
 
-            body.append(f"{weight:.4f} conj_{a.id}")
+            a_id = a.id
+            if a.id in duplicate_mapping and a.map_to_id != -1:
+                assert a.map_to_id == duplicate_mapping[a.id]
+                a_id = duplicate_mapping[a.id]
+
+            body.append(f"{weight:.4f} conj_{a_id}")
 
         weighted_logic_equations.append(
             f"{head} = {' + '.join(body)} + {b:.4f}"

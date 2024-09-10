@@ -1,0 +1,4 @@
+experiment_name: sc_ws_ppo_mlp_l4_1e5
+multirun_seeds: [451, 1439, 2099, 2341, 2763, 3144, 3902, 3959, 4504, 4824, 5685, 7106, 7700, 8771, 9087, 9507]
+
+model_latent_size: 4

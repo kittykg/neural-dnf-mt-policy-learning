@@ -107,7 +107,7 @@ class SSCPPOBaseAgent(nn.Module):
 
     def get_actions(
         self, preprocessed_obs: dict[str, Tensor], use_argmax: bool = True
-    ):
+    ) -> npt.NDArray[np.int64]:
         """
         Return the actions based on the observation.
         """

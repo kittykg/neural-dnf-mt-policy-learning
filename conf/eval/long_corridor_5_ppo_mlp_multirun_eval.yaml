@@ -1,0 +1,11 @@
+experiment_name: lc5_sn_ppo_mlp_l4_1e5
+multirun_seeds: [267, 1336, 1477, 1489, 1531, 2343, 2500, 2595, 3113, 3877, 4349, 5581, 5708, 5747, 7377, 8535]
+
+model_latent_size: 4
+
+# Long corridor configuration
+long_corridor:
+  corridor_length: 5
+  start_state: 0
+  goal_state: 4
+  special_states: [1]

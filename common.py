@@ -17,12 +17,14 @@ def init_params(m):
             m.bias.data.fill_(0)
 
 
-def synthesize(array) -> OrderedDict[str, float]:
+def synthesize(array, compute_ste: bool = False) -> OrderedDict[str, float]:
     d = OrderedDict()
     d["mean"] = np.mean(array)
     d["std"] = np.std(array)
     d["min"] = np.amin(array)
     d["max"] = np.amax(array)
+    if compute_ste:
+        d["ste"] = np.std(array) / np.sqrt(len(array))
     return d
 
 

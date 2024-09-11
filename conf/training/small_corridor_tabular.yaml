@@ -1,0 +1,17 @@
+experiment_name: sc_tab_5e5
+
+seed: null
+
+gamma: 0.95
+alpha: 0.001
+
+eps_start: 1.0
+eps_end: 0.1
+eps_decay: 50000
+
+num_episodes: 5e5
+
+use_sarsa: False
+use_state_no_as_obs: True
+
+logging_freq: 10000

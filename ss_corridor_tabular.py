@@ -1,39 +1,51 @@
-from collections import defaultdict
 import logging
 from pathlib import Path
 import random
 import traceback
 
-import gymnasium as gym
-from gymnasium.envs.toy_text.blackjack import BlackjackEnv
 import hydra
 from hydra.core.hydra_config import HydraConfig
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
 import pandas as pd
 import wandb
 
-from blackjack_common import get_target_policy, create_target_policy_plots
+from corridor_grid.envs.base_ss_corridor import BaseSpecialStateCorridorEnv
+from ss_corridor_ppo import construct_single_environment
 from tabular_common import TabularQAgent, get_moving_average_for_plot
 from utils import post_to_discord_webhook
 
-
-EVAL_ENV_SEED = 1
-N_ACTIONS = 2
-ObservationType = tuple[int, int, int]
-
 log = logging.getLogger()
 
+# This map is used for mapping a wall status observation to a single index for
+# the Q table.
+# There should be only 3 combinations of wall status in a SSCorridorEnv, since
+# there is no situation where both walls are present on the left and right.
+SSCorridorWallStatusMap: dict[tuple[int, int], int] = {
+    (0, 0): 0,
+    (1, 0): 1,
+    (0, 1): 2,
+}
+SSCorridorWallStatusReverseMap: dict[int, tuple[int, int]] = {
+    0: (0, 0),
+    1: (1, 0),
+    2: (0, 1),
+}
+N_ACTIONS = 2
 
-class BlackjackTabularQAgent(TabularQAgent):
+
+class SSCTabularQAgent(TabularQAgent):
+    n_states: int
     n_actions: int
-    q_table: defaultdict[ObservationType, npt.NDArray[np.float64]]
+    use_state_no_as_obs: bool
+    q_table: npt.NDArray[np.float64]
 
     def __init__(
         self,
+        n_states: int,
         n_actions: int,
+        use_state_no_as_obs: bool,
         gamma: float,
         alpha: float,
         eps_end: float,
@@ -49,20 +61,26 @@ class BlackjackTabularQAgent(TabularQAgent):
             eps_decay=eps_decay,
             use_sarsa=use_sarsa,
         )
-
+        self.n_states = n_states
         self.n_actions = n_actions
-        self.q_table = defaultdict(lambda: np.zeros(N_ACTIONS))
+        self.use_state_no_as_obs = use_state_no_as_obs
+        self.q_table = np.zeros((n_states, n_actions))
+
+    def _obs_processing(self, obs: dict) -> int:
+        return (
+            SSCorridorWallStatusMap[tuple(obs["wall_status"])]  # type: ignore
+            if not self.use_state_no_as_obs
+            else obs["agent_location"]
+        )
 
 
 def train(
-    env: BlackjackEnv,
-    agent: BlackjackTabularQAgent,
+    env: BaseSpecialStateCorridorEnv,
+    agent: SSCTabularQAgent,
     num_episodes: int,
+    use_state_no_as_obs: bool,
     use_wandb: bool,
-    full_experiment_name: str,
     logging_freq: int = 1000,
-    save_freq: int = 1000,
-    plot_policy: bool = True,
 ) -> None:
     episode_rewards = []
     episode_durations = []
@@ -74,8 +92,8 @@ def train(
             eps_threshold,
         ) = agent.simulate_one_episode(env)
 
-        episode_rewards.append(total_reward)
         episode_durations.append(episode_duration)
+        episode_rewards.append(total_reward)
 
         if i % logging_freq == 0:
             log.info(
@@ -86,7 +104,7 @@ def train(
             )
 
             if use_wandb:
-                # Plot the moving average of the rewards and durations
+                # Plot the moving average of the rewards, durations and td errors
                 reward_moving_average = get_moving_average_for_plot(
                     episode_rewards
                 )
@@ -96,6 +114,7 @@ def train(
                 td_error_moving_average = get_moving_average_for_plot(
                     agent.td_errors
                 )
+
                 log_dict = {
                     "episode": i,
                     "eps_threshold": eps_threshold,
@@ -103,51 +122,44 @@ def train(
                     "duration": episode_duration_moving_average[-1],
                     "td_error": td_error_moving_average[-1],
                 }
-                wandb.log(log_dict)
 
-        if i % save_freq == 0:
-            table_name = f"{full_experiment_name}_{i}.csv"
-            df = pd.DataFrame(agent.q_table)
-            df.to_csv(table_name)
+                # Log the Q table
+                for i in range(agent.n_states):
+                    for j in range(agent.n_actions):
+                        k = (
+                            f"S{i}_A{j}"
+                            if use_state_no_as_obs
+                            else f"S{SSCorridorWallStatusReverseMap[i]}_A{j}"
+                        )
+                        v = agent.q_table[i, j]
+                        log_dict[k] = v
+                wandb.log(log_dict)
 
     log.info("Training complete")
 
     log.info("Table:")
     log.info("\t" + "\t".join([str(i) for i in range(agent.n_actions)]))
-    df = pd.DataFrame(agent.q_table)
-    log.info(df)
-
-    if plot_policy:
-        plot_policy_grid_after_train(
-            Path(table_name), full_experiment_name, use_wandb
+    for i in range(agent.n_states):
+        info_str = (
+            f"S{i}\t"
+            if use_state_no_as_obs
+            else f"{SSCorridorWallStatusReverseMap[i]}\t"
         )
-
-
-def plot_policy_grid_after_train(
-    csv_path: Path, model_name: str, use_wandb: bool
-):
-    target_policy = get_target_policy(csv_path)
-    plot = create_target_policy_plots(target_policy, model_name)
-    plot.savefig(f"{model_name}_argmax_policy.png")
-
-    if use_wandb:
-        wandb.log(
-            {"argmax_policy": wandb.Image(f"{model_name}_argmax_policy.png")}
+        info_str += "\t".join(
+            [f"{agent.q_table[i, j]:.2f}" for j in range(agent.n_actions)]
         )
-
-    plt.close()
+        log.info(f"{info_str}")
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def run_experiment(cfg: DictConfig) -> None:
     training_cfg = cfg["training"]
     seed = training_cfg["seed"]
-
     if seed is None:
         seed = random.randint(0, 10000)
 
     # Expect the experiment name to be in the format of
-    # blackjack_tab_..._..._..._...
+    # [CORRIDOR SHORT CODE]_tab..._..._..._...
     name_list = training_cfg["experiment_name"].split("_")
     # Insert "sarsa" or "q" after "tab"
     name_list.insert(2, "sarsa" if training_cfg["use_sarsa"] else "q")
@@ -182,9 +194,17 @@ def run_experiment(cfg: DictConfig) -> None:
             group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
-    env: BlackjackEnv = gym.make("Blackjack-v1", render_mode="rgb_array")  # type: ignore
-    agent = BlackjackTabularQAgent(
-        n_actions=N_ACTIONS,
+    env = construct_single_environment(training_cfg, render_mode="ansi")
+    use_state_no_as_obs = training_cfg["use_state_no_as_obs"]
+    n_states = (
+        env.corridor_length
+        if use_state_no_as_obs
+        else len(SSCorridorWallStatusMap)
+    )
+    agent = SSCTabularQAgent(
+        n_states=n_states,
+        n_actions=int(env.action_space.n),
+        use_state_no_as_obs=use_state_no_as_obs,
         gamma=training_cfg["gamma"],
         alpha=training_cfg["alpha"],
         eps_end=training_cfg["eps_end"],
@@ -203,18 +223,25 @@ def run_experiment(cfg: DictConfig) -> None:
             env,
             agent,
             int(training_cfg["num_episodes"]),
+            use_state_no_as_obs,
             use_wandb,
-            full_experiment_name,
             logging_freq=training_cfg["logging_freq"],
-            save_freq=training_cfg["save_freq"],
         )
 
-        table_name = f"{full_experiment_name}.csv"
+        table_name = f"{full_experiment_name}.npy"
         df = pd.DataFrame(agent.q_table)
         df.to_csv(table_name)
 
         if use_wandb:
-            wandb.save(glob_str=table_name)
+            model_artifact = wandb.Artifact(
+                table_name,
+                type="ndarray",
+                description=f"{full_experiment_name} Q-value Table",
+                metadata=dict(wandb.config),
+            )
+            model_artifact.add_file(table_name)
+            wandb.save(table_name)
+            run.log_artifact(model_artifact)  # type: ignore
 
         if use_discord_webhook:
             msg_body = "Success!"

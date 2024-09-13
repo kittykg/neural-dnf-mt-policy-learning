@@ -1,0 +1,12 @@
+experiment_name: lc11_sn_tab_q_5e5
+multirun_seeds: [594, 1259, 2385, 3059, 3375, 5034, 5674, 5952, 6078, 6355, 7884, 8047, 8973, 9523, 9789, 9930]
+
+# experiment_name: lc11_sn_tab_sarsa_5e5
+# multirun_seeds: [203, 1388, 1604, 2283, 2767, 3260, 3756, 3981, 5300, 5425, 6530, 7230, 7668, 8012, 8125, 9172]
+  
+# Long corridor configuration
+long_corridor:
+  corridor_length: 11
+  start_state: 7
+  goal_state: 3
+  special_states: [5, 6, 7, 8]

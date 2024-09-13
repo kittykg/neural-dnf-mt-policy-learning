@@ -181,7 +181,7 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
     return_per_episode = synthesize(return_per_episode_list, compute_ste=True)
     log_str = f"MLP multi-run aggregated:  R - "
     for k, v in return_per_episode.items():
-        log_str += f"{METRIC_TO_SYMBOL[k]} {v:.2f} "
+        log_str += f"{METRIC_TO_SYMBOL[k]} {v:.3f} "
     log.info(log_str)
 
     return return_per_episode
@@ -208,7 +208,7 @@ def run_eval(cfg: DictConfig) -> None:
         if use_discord_webhook:
             msg_body = "Success!"
             for k, v in logs.items():
-                msg_body += f"\nEpisodic return {k}: {v:.2f}"
+                msg_body += f"\nEpisodic return {k}: {v:.3f}"
     except BaseException as e:
         if use_discord_webhook:
             if isinstance(e, KeyboardInterrupt):

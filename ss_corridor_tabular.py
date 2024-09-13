@@ -161,8 +161,12 @@ def run_experiment(cfg: DictConfig) -> None:
     # Expect the experiment name to be in the format of
     # [CORRIDOR SHORT CODE]_tab..._..._..._...
     name_list = training_cfg["experiment_name"].split("_")
+    # Insert "sn"/"ws" between corridor env name and ppo to indicate whether the
+    # environment is POMDP or MDP
+    name_list.insert(1, "sn" if training_cfg["use_state_no_as_obs"] else "ws")
+    # Now the name list should be [CORRIDOR SHORT CODE]_[sn/ws]_tab..._..._...
     # Insert "sarsa" or "q" after "tab"
-    name_list.insert(2, "sarsa" if training_cfg["use_sarsa"] else "q")
+    name_list.insert(3, "sarsa" if training_cfg["use_sarsa"] else "q")
     # Add the seed at the end of the name list
     name_list.append(str(seed))
     full_experiment_name = "_".join(name_list)
@@ -228,7 +232,7 @@ def run_experiment(cfg: DictConfig) -> None:
             logging_freq=training_cfg["logging_freq"],
         )
 
-        table_name = f"{full_experiment_name}.npy"
+        table_name = f"{full_experiment_name}.csv"
         df = pd.DataFrame(agent.q_table)
         df.to_csv(table_name)
 

@@ -13,4 +13,4 @@ num_episodes: 1e4
 
 use_sarsa: False
 
-logging_freq: 10000
+logging_freq: 1000

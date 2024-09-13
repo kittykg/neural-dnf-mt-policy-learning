@@ -1,12 +1,10 @@
 import logging
-import math
 from pathlib import Path
 import random
 import traceback
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
-import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from omegaconf import DictConfig, OmegaConf
@@ -15,29 +13,21 @@ import wandb
 
 import gymnasium as gym
 from gymnasium import Env
-from gymnasium.wrappers.record_video import RecordVideo
 from utils import post_to_discord_webhook
+
+from eval.taxi_tabular_multirun_eval import simulate_on_env, record_video
+from tabular_common import TabularQAgent
 
 log = logging.getLogger()
 EVAL_ENV_SEED = 123
+N_ACTIONS = 6
+N_STATES = 500
 
 
-class TabularQAgent:
+class TaxiTabularQAgent(TabularQAgent):
     n_states: int
     n_actions: int
     q_table: npt.NDArray[np.float64]
-
-    gamma: float
-    alpha: float
-
-    steps_done: int
-    eps_end: float
-    eps_start: float
-    eps_decay: float
-
-    use_sarsa: bool
-
-    td_errors: list[float]
 
     def __init__(
         self,
@@ -50,177 +40,23 @@ class TabularQAgent:
         eps_decay: float,
         use_sarsa: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(
+            gamma=gamma,
+            alpha=alpha,
+            eps_end=eps_end,
+            eps_start=eps_start,
+            eps_decay=eps_decay,
+            use_sarsa=use_sarsa,
+        )
 
         self.n_states = n_states
         self.n_actions = n_actions
         self.q_table = np.zeros((n_states, n_actions))
 
-        self.gamma = gamma
-        self.alpha = alpha
-
-        self.steps_done = 0
-        self.eps_end = eps_end
-        self.eps_start = eps_start
-        self.eps_decay = eps_decay
-
-        self.use_sarsa = use_sarsa
-
-        self.td_errors = []
-
-    def best_value_and_action(self, state: int) -> tuple[float, int]:
-        action_values = self.q_table[state, :]
-        best_value = np.max(action_values)
-        best_action = np.argmax(action_values)
-        return best_value, best_action  # type: ignore
-
-    def select_epsilon_greedy_action(
-        self, env: Env, state: int, eval: bool = False
-    ) -> tuple[int, float]:
-        sample = random.random()
-        eps_threshold = self.eps_end + (
-            self.eps_start - self.eps_end
-        ) * math.exp(-1.0 * self.steps_done / self.eps_decay)
-        self.steps_done += 1
-        action = None
-        if eval:
-            action = np.argmax(self.q_table[state, :])
-        elif sample > eps_threshold:
-            action = np.argmax(self.q_table[state, :])
-        else:
-            action = env.action_space.sample()
-        return int(action), eps_threshold
-
-    def simulate_one_episode(self, env: Env) -> tuple[float, int, float]:
-        if self.use_sarsa:
-            return self._simulate_one_episode_sarsa(env)
-        else:
-            return self._simulate_one_episode_q_learning(env)
-
-    def _simulate_one_episode_sarsa(self, env: Env) -> tuple[float, int, float]:
-        total_reward = 0
-        state, _ = env.reset()
-        action, _ = self.select_epsilon_greedy_action(env, state)
-        terminated = False
-        truncated = False
-        episode_duration = 0
-        eps_threshold = 0
-
-        while not terminated and not truncated:
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward  # type: ignore
-
-            # Update Q table
-            # SARSA: Q(s,a) = Q(s,a) + alpha * (r + gamma * Q(s',a') - Q(s,a))
-            new_action, eps_threshold = self.select_epsilon_greedy_action(
-                env, next_state
-            )
-            new_value = (
-                reward + self.gamma * self.q_table[next_state, new_action]
-            )
-            old_value = self.q_table[state, action]
-            self.q_table[state, action] = old_value + self.alpha * (
-                new_value - old_value
-            )
-
-            self.td_errors.append(new_value - old_value)
-
-            state = next_state
-            action = new_action
-            episode_duration += 1
-
-        return total_reward, episode_duration, eps_threshold
-
-    def _simulate_one_episode_q_learning(
-        self, env: Env
-    ) -> tuple[float, int, float]:
-        total_reward = 0
-        state, _ = env.reset()
-        terminated = False
-        truncated = False
-        episode_duration = 0
-        eps_threshold = 0
-
-        while not terminated and not truncated:
-            action, eps_threshold = self.select_epsilon_greedy_action(
-                env, state
-            )
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward  # type: ignore
-
-            # Update Q table
-            # Q learning: Q(s,a) = Q(s,a) + alpha * (r + gamma * max_a' Q(s',a') - Q(s,a))
-            best_value, _ = self.best_value_and_action(next_state)
-            new_value = reward + self.gamma * best_value  # type: ignore
-            old_value = self.q_table[state, action]
-            self.q_table[state, action] = old_value + self.alpha * (
-                new_value - old_value
-            )
-
-            self.td_errors.append(new_value - old_value)
-
-            state = next_state
-            episode_duration += 1
-
-        return total_reward, episode_duration, eps_threshold
-
-    def after_train_evaluate(self) -> tuple[float, float]:
-        env = gym.make("Taxi-v3", render_mode="rgb_array")
-        env = RecordVideo(env, video_folder="videos")
-
-        if self.use_sarsa:
-            total_reward, episode_duration = self._evaluate_sarsa(env)  # type: ignore
-        else:
-            total_reward, episode_duration = self._evaluate_q_learning(env)  # type: ignore
-        env.close()
-
-        return total_reward, episode_duration
-
-    def _evaluate_sarsa(
-        self, env: Env, eval_env_seed: int | None = None
-    ) -> tuple[float, int]:
-        total_reward = 0
-        state, _ = env.reset(seed=eval_env_seed)
-        action, _ = self.select_epsilon_greedy_action(env, state)
-        terminated = False
-        truncated = False
-        episode_duration = 0
-
-        while not terminated and not truncated:
-            next_state, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward  # type: ignore
-
-            new_action, _ = self.select_epsilon_greedy_action(
-                env, next_state, eval=True
-            )
-
-            state = next_state
-            action = new_action
-            episode_duration += 1
-
-        return total_reward, episode_duration
-
-    def _evaluate_q_learning(
-        self, env: Env, eval_env_seed: int | None = None
-    ) -> tuple[float, int]:
-        total_reward = 0
-        state, _ = env.reset(seed=eval_env_seed)
-        terminated = False
-        truncated = False
-        episode_duration = 0
-
-        while not terminated and not truncated:
-            action, _ = self.select_epsilon_greedy_action(env, state, eval=True)
-            state, reward, terminated, truncated, _ = env.step(action)
-            total_reward += reward  # type: ignore
-            episode_duration += 1
-
-        return total_reward, episode_duration
-
 
 def train(
     env: Env,
-    agent: TabularQAgent,
+    agent: TaxiTabularQAgent,
     num_episodes: int,
     use_wandb: bool,
     logging_freq: int = 1000,
@@ -258,22 +94,22 @@ def train(
 
     log.info("Training complete")
 
-    log.info("Table:")
-    log.info("\t" + "\t".join([str(i) for i in range(agent.n_actions)]))
-    for i in range(agent.n_states):
-        info_str = f"S{i}\t"
-        info_str += "\t".join(
-            [f"{agent.q_table[i, j]:.2f}" for j in range(agent.n_actions)]
-        )
-        log.info(f"{info_str}")
 
-
-def after_train_eval(agent: TabularQAgent, use_wandb: bool):
+def after_train_eval(agent: TaxiTabularQAgent, use_wandb: bool):
     # Evaluate the agent
-    total_reward, episode_duration = agent.after_train_evaluate()
+    env = gym.make("Taxi-v3")
+    ret_log = simulate_on_env(
+        agent.q_table, env, use_argmax=True, epsilon=0.0, num_episodes=100
+    )
 
-    log.info(f"Evaluated agent with total reward {total_reward}")
-    log.info(f"Evaluated agent with episode duration {episode_duration}")
+    log.info(f"Evaluated agent")
+    log.info(f"Average return: {ret_log['avg_return']:.3f}")
+    log.info(f"Standard deviation of return: {ret_log['std_return']:.3f}")
+    log.info(f"Standard error of return: {ret_log['std_error']:.3f}")
+
+    record_video(
+        agent.q_table, use_argmax=True, epsilon=0.0, video_dir=Path("videos")
+    )
 
     if use_wandb:
         wandb.log(
@@ -291,7 +127,7 @@ def run_experiment(cfg: DictConfig) -> None:
     seed = training_cfg["seed"]
 
     if seed is None:
-        seed = random.randint(0, 1000000)
+        seed = random.randint(0, 10000)
 
     # Expect the experiment name to be in the format of
     # taxi_tab_..._..._..._...
@@ -330,10 +166,9 @@ def run_experiment(cfg: DictConfig) -> None:
         )
 
     env = gym.make("Taxi-v3", render_mode="ansi")
-    n_states = 500
-    agent = TabularQAgent(
-        n_states=n_states,
-        n_actions=6,
+    agent = TaxiTabularQAgent(
+        n_states=N_STATES,
+        n_actions=N_ACTIONS,
         gamma=training_cfg["gamma"],
         alpha=training_cfg["alpha"],
         eps_end=training_cfg["eps_end"],

@@ -12,7 +12,6 @@ import gymnasium as gym
 import hydra
 import numpy as np
 from omegaconf import DictConfig
-import torch
 
 
 file = Path(__file__).resolve()
@@ -116,7 +115,6 @@ def eval(cfg: DictConfig) -> dict[str, int | float]:
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def run_eval(cfg: DictConfig) -> None:
     # Set random seed
-    torch.manual_seed(DEFAULT_GEN_SEED)
     np.random.seed(DEFAULT_GEN_SEED)
     random.seed(DEFAULT_GEN_SEED)
 
@@ -162,6 +160,4 @@ def run_eval(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    torch.set_warn_always(False)
-
     run_eval()

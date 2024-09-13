@@ -1,5 +1,4 @@
-# This script evaluates the tabular agents trained on the SpecialStateCorridor
-# environment.
+# This script evaluates the tabular agents trained on the Taxi environment.
 import json
 import logging
 from pathlib import Path
@@ -8,6 +7,8 @@ import sys
 import traceback
 from typing import Any
 
+import gymnasium as gym
+from gymnasium.wrappers.record_video import RecordVideo
 import hydra
 import numpy as np
 from omegaconf import DictConfig
@@ -23,41 +24,46 @@ try:
 except ValueError:  # Already removed
     pass
 
-
-from ss_corridor_ppo import construct_single_environment
-from ss_corridor_tabular import SSCorridorWallStatusMap, N_ACTIONS
 from utils import post_to_discord_webhook
 
-DEFAULT_GEN_SEED = 3
-SSC_SINGLE_ENV_NUM_EPISODES = 100
 BASE_STORAGE_DIR = root / "results"
+DEFAULT_GEN_SEED = 3
+N_ACTIONS = 6
+TAXI_SINGLE_ENV_NUM_EPISODES = 10000
 
 
 log = logging.getLogger()
 
 
 def get_action_from_q_table(
-    q_table: np.ndarray,
-    use_state_no_as_obs: bool,
-    obs: dict[str, Any],
-    use_argmax: bool,
-    epsilon: float,
+    q_table: np.ndarray, obs: int, use_argmax: bool, epsilon: float
 ) -> int:
-    i = (
-        SSCorridorWallStatusMap[tuple(obs["wall_status"])]
-        if not use_state_no_as_obs
-        else obs["agent_location"]
-    )
-
     if use_argmax:
-        return int(np.argmax(q_table[i]))
+        return int(np.argmax(q_table[obs]))
     else:
         if np.random.rand() < epsilon:
             return np.random.randint(N_ACTIONS)
-        return int(np.argmax(q_table[i]))
+        return int(np.argmax(q_table[obs]))
 
 
-def result_analysis(res_list: list[float]) -> dict[str, int | float]:
+def simulate_on_env(
+    q_table: np.ndarray,
+    env: gym.Env,
+    use_argmax: bool,
+    epsilon: float,
+    num_episodes: int = TAXI_SINGLE_ENV_NUM_EPISODES,
+) -> dict[str, int | float]:
+    res_list = []
+    for _ in range(num_episodes):
+        obs, _ = env.reset()
+        terminated, truncated = False, False
+        reward_sum = 0
+        while not terminated and not truncated:
+            action = get_action_from_q_table(q_table, obs, use_argmax, epsilon)
+            obs, reward, terminated, truncated, _ = env.step(action)
+            reward_sum += reward  # type: ignore
+        res_list.append(reward_sum)
+
     res_array = np.array(res_list)
 
     # Avg. return
@@ -67,17 +73,19 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     # Std. error
     std_error = std_return / np.sqrt(len(res_list))
 
-    log.info(f"Avg. return: {avg_return:.3f}")
-    log.info(f"Std. return: {std_return:.3f}")
-    log.info(f"Std. error: {std_error:.3f}")
-
-    np.set_printoptions(formatter={"float": lambda x: "{:.3f}".format(x)})
-
     return {
         "avg_return": avg_return,
         "std_return": std_return,
         "std_error": std_error,
     }
+
+
+def record_video(
+    q_table: np.ndarray, use_argmax: bool, epsilon: float, video_dir: Path
+) -> None:
+    env = gym.make("Taxi-v3", render_mode="rgb_array")
+    env = RecordVideo(env, video_folder=str(video_dir.absolute()))
+    simulate_on_env(q_table, env, use_argmax, epsilon, 1)
 
 
 def single_eval(
@@ -89,26 +97,15 @@ def single_eval(
     Return the results in a dictionary.
     """
     experiment_name = eval_cfg["experiment_name"]
-    use_state_no_as_obs = "sn" in experiment_name
     use_argmax = eval_cfg.get("use_argmax", True)
     epsilon = eval_cfg.get("epsilon", 0.1)
 
     name_list = experiment_name.split("_")
-    # Capitalise the first 3 words in name_list
-    env_name = name_list[0]
-    name_list = [name.capitalize() for name in name_list[:3]] + name_list[3:]
+    # Capitalise the first 2 words in name_list
+    name_list = [name.capitalize() for name in name_list[:2]] + name_list[2:]
     dir_name = "-".join(name_list)
 
-    base_dir = (
-        BASE_STORAGE_DIR
-        / {"sc": "SC-TAB", "lc5": "LC5-TAB", "lc11": "LC11-TAB"}[env_name]
-    )
-
-    if "sn" in experiment_name:
-        base_dir = base_dir / "SN" / dir_name / f"{dir_name}-{seed}"
-    else:
-        base_dir = base_dir / "WS" / dir_name / f"{dir_name}-{seed}"
-
+    base_dir = BASE_STORAGE_DIR / "multirun" / dir_name / f"{dir_name}-{seed}"
     target_q_table_csv_path = base_dir / f"{experiment_name}_{seed}.csv"
 
     with open(target_q_table_csv_path, "r") as f:
@@ -118,25 +115,14 @@ def single_eval(
     target_q_table = df.to_numpy()
 
     log.info(f"Evaluating tabular agent: {experiment_name}_{seed}")
-
-    res_list = []
-
-    env = construct_single_environment(eval_cfg)
-
-    for _ in range(SSC_SINGLE_ENV_NUM_EPISODES):
-        obs, _ = env.reset()
-        terminated, truncated = False, False
-        reward_sum = 0
-        while not terminated and not truncated:
-            action = get_action_from_q_table(
-                target_q_table, use_state_no_as_obs, obs, use_argmax, epsilon
-            )
-            obs, reward, terminated, truncated, _ = env.step(action)
-            reward_sum += reward  # type: ignore
-        res_list.append(reward_sum)
-
+    env = gym.make("Taxi-v3")
+    ret_dict = simulate_on_env(
+        target_q_table, env, use_argmax, epsilon, TAXI_SINGLE_ENV_NUM_EPISODES
+    )
     log.info(f"Results of {experiment_name}:")
-    ret_dict = result_analysis(res_list)
+    log.info(f"Avg. return: {ret_dict['avg_return']:.3f}")
+    log.info(f"Std. return: {ret_dict['std_return']:.3f}")
+    log.info(f"Std. error: {ret_dict['std_error']:.3f}")
 
     # Save the return dict into a json
     with open(base_dir / "eval_results.json", "w") as f:
@@ -210,7 +196,7 @@ def run_eval(cfg: DictConfig) -> None:
             webhook_url = cfg["webhook"]["discord_webhook_url"]
             post_to_discord_webhook(
                 webhook_url=webhook_url,
-                experiment_name="Blackjack Tabular Multirun Eval",
+                experiment_name="Taxi Tabular Multirun Eval",
                 message_body=msg_body,
                 errored=errored,
                 keyboard_interrupt=keyboard_interrupt,

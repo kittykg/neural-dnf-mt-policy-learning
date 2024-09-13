@@ -30,7 +30,7 @@ from ss_corridor_ppo import (
     construct_single_environment,
     make_env,
     ss_corridor_preprocess_obs,
-    SSCPPOMLPAgent,
+    SSCPPOBaseAgent,
 )
 from utils import post_to_discord_webhook
 
@@ -53,7 +53,7 @@ log = logging.getLogger()
 
 def simulate_fn(
     envs: gym.vector.SyncVectorEnv,
-    model: SSCPPOMLPAgent,
+    model: SSCPPOBaseAgent,
     process_obs: Callable[[dict], Tensor],
     num_episodes: int = NUM_EPISODES,
     use_argmax: bool = True,
@@ -72,6 +72,11 @@ def simulate_fn(
             actions = model.get_actions(
                 preprocessed_obs=next_obs_dict, use_argmax=use_argmax
             )
+            if isinstance(actions, tuple):
+                # NDNF-based agents return a tuple, where the first element is
+                # the action sampled/argmax-ed from the action probabilities
+                actions = actions[0]
+
         next_obs_dict, reward, terminations, truncations, _ = envs.step(actions)
         next_obs = process_obs(next_obs_dict)
         next_obs_dict = {"input": next_obs}
@@ -98,7 +103,7 @@ def simulate_fn(
 
 
 def post_training(
-    model: SSCPPOMLPAgent,
+    model: SSCPPOBaseAgent,
     envs: gym.vector.SyncVectorEnv,
     process_obs: Callable[[dict], Tensor],
     use_argmax: bool = True,
@@ -135,9 +140,10 @@ def post_training(
 
 def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
     experiment_name = eval_cfg["experiment_name"]
-    assert "mlp" in experiment_name
-
     use_state_no_as_obs = "sn" in experiment_name
+    use_ndnf = "ndnf" in experiment_name
+    use_eo = "eo" in experiment_name
+    use_mt = "mt" in experiment_name
 
     envs = gym.vector.SyncVectorEnv(
         [make_env(eval_cfg, i, i, False) for i in range(NUM_PROCESSES)]
@@ -145,7 +151,7 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
     single_env = construct_single_environment(eval_cfg)
     process_obs = lambda obs: ss_corridor_preprocess_obs(
         use_state_no_as_obs=use_state_no_as_obs,
-        use_ndnf=False,
+        use_ndnf=use_ndnf,
         corridor_length=single_env.corridor_length,
         obs=obs,
         device=DEVICE,
@@ -160,9 +166,10 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
             num_inputs=num_inputs,
             num_latent=eval_cfg["model_latent_size"],
             action_size=int(single_env.action_space.n),
-            use_ndnf=False,
+            use_ndnf=use_ndnf,
+            use_eo=use_eo,
+            use_mt=use_mt,
         )
-        assert isinstance(model, SSCPPOMLPAgent)
         model.to(DEVICE)
         model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
         model.load_state_dict(model_state)
@@ -179,7 +186,7 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
         log.info("======================================\n")
 
     return_per_episode = synthesize(return_per_episode_list, compute_ste=True)
-    log_str = f"MLP multi-run aggregated:  R - "
+    log_str = f"{experiment_name} multi-run aggregated:  R - "
     for k, v in return_per_episode.items():
         log_str += f"{METRIC_TO_SYMBOL[k]} {v:.3f} "
     log.info(log_str)

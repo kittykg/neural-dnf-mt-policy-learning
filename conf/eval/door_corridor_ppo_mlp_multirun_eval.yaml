@@ -1,0 +1,20 @@
+experiment_name: dc5_ppo_mlp_k1eoc4_tanh_exl16_3e5
+multirun_seeds: [474, 482, 643, 955, 1012, 1925, 2457, 3285, 3767, 3775, 4224, 4527, 5998, 7279, 7288, 8474]
+
+use_argmax_to_choose_action: True
+discretise_img_encoding: True
+
+customised_image_encoder:
+  # Conv layer config:
+  encoder_output_chanel: 4
+  last_act: tanh
+  kernel_size: 1
+  # Extra layer config:
+  use_extra_layer: True
+  extra_layer_out: 16
+  extra_layer_use_bias: True
+
+door_corridor:
+  corridor_length: 5
+  agent_view_size: 3
+  max_steps: 30

@@ -1,17 +1,16 @@
-# This script evaluates PPO agents on SpecialStateCorridor envs
+# This script evaluates PPO agents on the DoorCorridor environment
 import logging
 from pathlib import Path
 import random
 import sys
 import traceback
-from typing import Any, Callable
+from typing import Any
 
 import gymnasium as gym
 import hydra
 import numpy as np
 from omegaconf import DictConfig
 import torch
-from torch import Tensor
 
 
 file = Path(__file__).resolve()
@@ -25,37 +24,36 @@ except ValueError:  # Already removed
 
 
 from common import synthesize
+from corridor_grid.envs import DoorCorridorEnv
+from door_corridor_ppo import construct_model, make_env, DCPPOBaseAgent
 from eval.common import METRIC_TO_SYMBOL_MAP
-from ss_corridor_ppo import (
-    construct_model,
-    construct_single_environment,
-    make_env,
-    ss_corridor_preprocess_obs,
-    SSCPPOBaseAgent,
-)
 from utils import post_to_discord_webhook
 
 
-BASE_STORAGE_DIR = root / "ssc_ppo_storage"
+BASE_STORAGE_DIR = root / "dc_ppo_storage"
 DEFAULT_GEN_SEED = 2
 DEVICE = torch.device("cpu")
 NUM_EPISODES = 100
 NUM_PROCESSES = 8
 
+
+envs = gym.vector.SyncVectorEnv(
+    [make_env(i, i, False) for i in range(NUM_PROCESSES)]
+)
+single_env = DoorCorridorEnv(render_mode="rgb_array")
 log = logging.getLogger()
 
 
 def simulate(
     envs: gym.vector.SyncVectorEnv,
-    model: SSCPPOBaseAgent,
-    process_obs: Callable[[dict], Tensor],
-    num_episodes: int = NUM_EPISODES,
+    model: DCPPOBaseAgent,
     use_argmax: bool = True,
+    num_episodes=NUM_EPISODES,
 ) -> dict[str, Any]:
     logs = {"num_frames_per_episode": [], "return_per_episode": []}
     next_obs_dict, _ = envs.reset()
-    next_obs = process_obs(next_obs_dict)
-    next_obs_dict = {"input": next_obs}
+    next_obs = torch.Tensor(next_obs_dict["image"]).to(DEVICE)
+    next_obs_dict = {"image": next_obs}
 
     log_done_counter = 0
     log_episode_return = torch.zeros(NUM_PROCESSES, device=DEVICE)
@@ -64,16 +62,17 @@ def simulate(
     while log_done_counter < num_episodes:
         with torch.no_grad():
             actions = model.get_actions(
-                preprocessed_obs=next_obs_dict, use_argmax=use_argmax
+                preprocessed_obs=next_obs_dict,
+                use_argmax=use_argmax,
             )
-            if isinstance(actions, tuple):
-                # NDNF-based agents return a tuple, where the first element is
-                # the action sampled/argmax-ed from the action probabilities
-                actions = actions[0]
+        if isinstance(actions, tuple):
+            # For NDNF based model, the get_actions() returns a tuple of
+            # actions and tanh interpretation.
+            actions = actions[0]
 
         next_obs_dict, reward, terminations, truncations, _ = envs.step(actions)
-        next_obs = process_obs(next_obs_dict)
-        next_obs_dict = {"input": next_obs}
+        next_obs = torch.Tensor(next_obs_dict["image"]).to(DEVICE)
+        next_obs_dict = {"image": next_obs}
         next_done = np.logical_or(terminations, truncations)
 
         log_episode_return += torch.tensor(
@@ -97,18 +96,9 @@ def simulate(
 
 
 def rl_performance_eval(
-    model: SSCPPOBaseAgent,
-    envs: gym.vector.SyncVectorEnv,
-    process_obs: Callable[[dict], Tensor],
-    use_argmax: bool = True,
+    model: DCPPOBaseAgent, use_argmax: bool = True
 ) -> dict[str, Any]:
-    logs = simulate(
-        envs=envs,
-        model=model,
-        process_obs=process_obs,
-        num_episodes=NUM_EPISODES,
-        use_argmax=use_argmax,
-    )
+    logs = simulate(envs, model, use_argmax)
 
     num_frames = sum(logs["num_frames_per_episode"])
     return_per_episode = synthesize(
@@ -132,37 +122,19 @@ def rl_performance_eval(
     return logs
 
 
-def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
-    experiment_name = eval_cfg["experiment_name"]
-    use_state_no_as_obs = "sn" in experiment_name
+def post_train_eval(eval_cfg: DictConfig):
+    experiment_name = f"{eval_cfg['experiment_name']}"
     use_ndnf = "ndnf" in experiment_name
-    use_eo = "eo" in experiment_name
-    use_mt = "mt" in experiment_name
-
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(eval_cfg, i, i, False) for i in range(NUM_PROCESSES)]
-    )
-    single_env = construct_single_environment(eval_cfg)
-    process_obs = lambda obs: ss_corridor_preprocess_obs(
-        use_state_no_as_obs=use_state_no_as_obs,
-        use_ndnf=use_ndnf,
-        corridor_length=single_env.corridor_length,
-        obs=obs,
-        device=DEVICE,
-    )
-    num_inputs = single_env.corridor_length if use_state_no_as_obs else 2
 
     return_per_episode_list = []
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
         model = construct_model(
-            num_inputs=num_inputs,
-            num_latent=eval_cfg["model_latent_size"],
-            action_size=int(single_env.action_space.n),
-            use_ndnf=use_ndnf,
-            use_eo=use_eo,
-            use_mt=use_mt,
+            eval_cfg,
+            DoorCorridorEnv.get_num_actions(),
+            use_ndnf,
+            single_env.observation_space["image"],  # type: ignore
         )
         model.to(DEVICE)
         model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
@@ -172,11 +144,10 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
         log.info(f"Experiment {model_dir.name} loaded!")
         ret_log = rl_performance_eval(
             model=model,
-            envs=envs,
-            process_obs=process_obs,
-            use_argmax=eval_cfg.get("use_argmax", True),
+            use_argmax=eval_cfg.get("use_argmax_to_choose_action", True),
         )
         return_per_episode_list.append(ret_log["avg_return_per_episode"])
+
         log.info("======================================\n")
 
     return_per_episode = synthesize(return_per_episode_list, compute_ste=True)

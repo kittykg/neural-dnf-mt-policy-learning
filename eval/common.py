@@ -111,3 +111,12 @@ class DoorCorridorFailureCode(IntEnum):
     FAIL_AT_RULE_EVAL_MISSING_ACTION = -15
     FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION = -16
     FAIL_AT_RULE_EVAL_TRUNCATED = -17
+
+
+METRIC_TO_SYMBOL_MAP = {
+    "mean": "μ",
+    "std": "σ",
+    "min": "m",
+    "max": "M",
+    "ste": "SE",
+}

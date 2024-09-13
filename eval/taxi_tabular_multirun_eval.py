@@ -101,16 +101,16 @@ def single_eval(
     epsilon = eval_cfg.get("epsilon", 0.1)
 
     name_list = experiment_name.split("_")
-    # Capitalise the first 2 words in name_list
-    name_list = [name.capitalize() for name in name_list[:2]] + name_list[2:]
+    # All upper case the first 2 words in name_list
+    name_list = [name.upper() for name in name_list[:2]] + name_list[2:]
     dir_name = "-".join(name_list)
 
-    base_dir = BASE_STORAGE_DIR / "multirun" / dir_name / f"{dir_name}-{seed}"
+    base_dir = BASE_STORAGE_DIR / "Taxi-TAB" / dir_name / f"{dir_name}-{seed}"
     target_q_table_csv_path = base_dir / f"{experiment_name}_{seed}.csv"
 
     with open(target_q_table_csv_path, "r") as f:
         # read the data as pandas dataframe
-        df = pd.read_csv(f, index_col=0)
+        df = pd.read_csv(f, index_col=None)
 
     target_q_table = df.to_numpy()
 
@@ -165,8 +165,6 @@ def run_eval(cfg: DictConfig) -> None:
     # Set random seed
     np.random.seed(DEFAULT_GEN_SEED)
     random.seed(DEFAULT_GEN_SEED)
-
-    torch.autograd.set_detect_anomaly(True)  # type: ignore
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None

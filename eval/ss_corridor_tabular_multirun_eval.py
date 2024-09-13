@@ -96,7 +96,7 @@ def single_eval(
     name_list = experiment_name.split("_")
     # Capitalise the first 3 words in name_list
     env_name = name_list[0]
-    name_list = [name.capitalize() for name in name_list[:3]] + name_list[3:]
+    name_list = [name.upper() for name in name_list[:3]] + name_list[3:]
     dir_name = "-".join(name_list)
 
     base_dir = (

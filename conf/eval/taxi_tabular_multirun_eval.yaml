@@ -1,0 +1,5 @@
+experiment_name: taxi_tab_q_1e4
+multirun_seeds: [159, 739, 1771, 1782, 2590, 3264, 5267, 7404, 7718, 9679]
+
+# experiment_name: taxi_tab_sarsa_1e4
+# multirun_seeds: [915, 1524, 1865, 3565, 4685, 5330, 5606, 5862, 6871, 9522]

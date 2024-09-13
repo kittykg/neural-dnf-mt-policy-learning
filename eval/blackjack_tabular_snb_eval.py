@@ -1,12 +1,14 @@
-# This script evaluates the tabular agents trained on the Blackjack environment.
+# This script evaluates the tabular agents described in Sutton and Barto's book
+# in the Blackjack environment.
 import json
 import logging
 from pathlib import Path
 import random
 import sys
 import traceback
-from typing import Any
 
+
+import gymnasium as gym
 import hydra
 import numpy as np
 from omegaconf import DictConfig
@@ -22,11 +24,13 @@ try:
 except ValueError:  # Already removed
     pass
 
-from blackjack_common import *
+
+from blackjack_common import get_target_policy
+from eval.blackjack_tabular_multirun_eval import result_analysis
 from utils import post_to_discord_webhook
 
 DEFAULT_GEN_SEED = 3
-BLACKJACK_SINGLE_ENV_NUM_EPISODES = 500
+BLACKJACK_SINGLE_ENV_NUM_EPISODES = 1000000
 
 
 log = logging.getLogger()
@@ -39,9 +43,12 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     avg_return = float(np.mean(res_array))
     # Std. return
     std_return = float(np.std(res_array))
+    # Ste. return
+    ste_return = std_return / np.sqrt(len(res_list))
 
     log.info(f"Avg. return: {avg_return:.3f}")
     log.info(f"Std. return: {std_return:.3f}")
+    log.info(f"Ste. return: {ste_return:.3f}")
 
     num_episodes = len(res_list)
     num_wins = int(np.sum(np.array(res_list) == 1))
@@ -61,6 +68,7 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     return {
         "avg_return": avg_return,
         "std_return": std_return,
+        "ste_return": ste_return,
         "num_wins": num_wins,
         "win_rate": win_rate,
         "num_losses": num_losses,
@@ -71,16 +79,18 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     }
 
 
-def single_eval(
-    experiment_name: str, target_policy_csv_path: Path
-) -> dict[str, int | float]:
+def eval(cfg: DictConfig) -> dict[str, int | float]:
     """
     Evaluate the tabular agent over a number of episodes across the environment.
     Return the results in a dictionary.
     """
+    target_policy_csv_path = Path(cfg["eval"]["target_policy_csv_path"])
+    assert (
+        target_policy_csv_path.exists()
+    ), f"Path {target_policy_csv_path} does not exist."
     target_policy = get_target_policy(target_policy_csv_path)
 
-    log.info(f"Evaluating tabular agent: {experiment_name}")
+    log.info(f"Evaluating Sutton and Barto's tabular agent:")
 
     res_list = []
 
@@ -96,71 +106,11 @@ def single_eval(
             reward_sum += reward  # type: ignore
         res_list.append(reward_sum)
 
-    log.info(f"Results of {experiment_name}:")
     ret_dict = result_analysis(res_list)
+    with open("snb_eval_results.json", "w") as f:
+        json.dump(ret_dict, f, indent=4)
 
     return ret_dict
-
-
-def multirun_eval(cfg: DictConfig) -> dict[str, Any]:
-    eval_cfg = cfg["eval"]
-    blackjack_tab_storage_dir = Path(eval_cfg["blackjack_tab_storage_dir"])
-    assert (
-        blackjack_tab_storage_dir.exists()
-        and blackjack_tab_storage_dir.is_dir()
-    ), f"Directory {blackjack_tab_storage_dir} does not exist."
-
-    skip_experiments = eval_cfg.get("skip_experiments", [])
-
-    ret_dicts = []
-
-    # Iterator over all the subdirectories
-    for d in blackjack_tab_storage_dir.iterdir():
-        experiment_name = d.stem
-        if experiment_name in skip_experiments:
-            log.info(f"Skipping experiment {experiment_name}")
-            continue
-
-        policy_name = "_".join(experiment_name.lower().split("-"))
-        target_policy_path = d / f"{policy_name}.csv"
-        if not target_policy_path.exists():
-            log.error(f"Path {target_policy_path} does not exist.")
-            continue
-
-        r = single_eval(experiment_name, target_policy_path)
-        ret_dicts.append(r)
-
-        # Save the return dict into a json
-        with open(d / "eval_results.json", "w") as f:
-            json.dump(r, f)
-
-        log.info("=====================================")
-
-    # Overall results
-    overall_avg = np.mean([ret_dict["avg_return"] for ret_dict in ret_dicts])
-    overall_std = np.std([ret_dict["avg_return"] for ret_dict in ret_dicts])
-    overall_win_rate = np.mean([ret_dict["win_rate"] for ret_dict in ret_dicts])
-    overall_loss_rate = np.mean(
-        [ret_dict["loss_rate"] for ret_dict in ret_dicts]
-    )
-    overall_draw_rate = np.mean(
-        [ret_dict["draw_rate"] for ret_dict in ret_dicts]
-    )
-
-    log.info(f"Results of {len(ret_dicts)} tabular agents:")
-    log.info(f"Overall avg return: {overall_avg}")
-    log.info(f"Overall std return: {overall_std}")
-    log.info(f"Overall win rate: {overall_win_rate}")
-    log.info(f"Overall loss rate: {overall_loss_rate}")
-    log.info(f"Overall draw rate: {overall_draw_rate}")
-
-    return {
-        "overall_avg": overall_avg,
-        "overall_std": overall_std,
-        "overall_win_rate": overall_win_rate,
-        "overall_loss_rate": overall_loss_rate,
-        "overall_draw_rate": overall_draw_rate,
-    }
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -178,15 +128,17 @@ def run_eval(cfg: DictConfig) -> None:
     errored = False
 
     try:
-        ret_dict = multirun_eval(cfg)
+        ret_dict = eval(cfg)
 
         if use_discord_webhook:
             msg_body = "Success!\n"
-            msg_body += f"Overall avg return:\t{ret_dict['overall_avg']}\n"
-            msg_body += f"Overall std return:\t{ret_dict['overall_std']}\n"
-            msg_body += f"Overall win rate:\t{ret_dict['overall_win_rate']}\n"
-            msg_body += f"Overall loss rate:\t{ret_dict['overall_loss_rate']}\n"
-            msg_body += f"Overall draw rate:\t{ret_dict['overall_draw_rate']}\n"
+            msg_body += "Sutton and Barto's tabular agent evaluation results:\n"
+            msg_body += f"Avg return:\t{ret_dict['avg_return']}\n"
+            msg_body += f"Std return:\t{ret_dict['std_return']}\n"
+            msg_body += f"Ste return:\t{ret_dict['ste_return']}\n"
+            msg_body += f"Win rate:\t{ret_dict['win_rate']}\n"
+            msg_body += f"Loss rate:\t{ret_dict['loss_rate']}\n"
+            msg_body += f"Draw rate:\t{ret_dict['draw_rate']}\n"
     except BaseException as e:
         if isinstance(e, KeyboardInterrupt):
             keyboard_interrupt = True

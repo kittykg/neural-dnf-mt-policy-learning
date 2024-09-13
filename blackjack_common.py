@@ -506,6 +506,7 @@ class BlackjackNDNFMutexTanhAgent(BlackjackNDNFBasedAgent):
         ndnf_agent.actor = self.actor.to_ndnf()
         return ndnf_agent
 
+
 def construct_model(
     num_latent: int,
     use_ndnf: bool,
@@ -658,9 +659,9 @@ def blackjack_env_preprocess_obss(
 
 def get_target_policy(csv_path: Path) -> TargetPolicyType:
     """
-    From the csv file, get the target policy learned by a tabular Q-learning
-    agent. The return dict is sorted by the observation tuple with the action as
-    its value.
+    From the csv file, get the target argmax policy learned by a tabular
+    Q-learning agent. The return dict is sorted by the observation tuple with
+    the action as its value.
     """
     if "snb" in csv_path.name:
         # Load an already-argmaxed policy from Sutton and Barto's book

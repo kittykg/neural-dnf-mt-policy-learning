@@ -34,7 +34,6 @@ from eval.door_corridor_ppo_ndnf_mt_multirun_eval import (
     SECOND_PRUNE_MODEL_PTH_NAME,
     ASP_RULES_FILE_NAME,
 )
-from eval.common import DoorCorridorFailureCode
 from utils import post_to_discord_webhook
 
 

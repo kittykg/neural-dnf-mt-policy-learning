@@ -79,7 +79,6 @@ def single_ndnf_mt_eval(
 def result_analysis(
     single_eval_results: list[OrderedDict[str, float]],
 ) -> dict[str, float]:
-    np.set_printoptions(formatter={"float": lambda x: "{:.3f}".format(x)})
     aggregated_log: dict[str, float] = dict()
 
     num_models = len(single_eval_results)

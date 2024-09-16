@@ -62,8 +62,6 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     log.info(f"Number of losses: {num_losses}\tPercentage: {loss_rate}")
     log.info(f"Number of draws: {num_draws}\tPercentage: {draw_rate}")
 
-    np.set_printoptions(formatter={"float": lambda x: "{:.3f}".format(x)})
-
     return {
         "avg_return": avg_return,
         "std_return": std_return,

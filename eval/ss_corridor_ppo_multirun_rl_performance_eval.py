@@ -39,7 +39,7 @@ from utils import post_to_discord_webhook
 BASE_STORAGE_DIR = root / "ssc_ppo_storage"
 DEFAULT_GEN_SEED = 2
 DEVICE = torch.device("cpu")
-NUM_EPISODES = 100
+NUM_EPISODES = 1000000
 NUM_PROCESSES = 8
 
 log = logging.getLogger()

@@ -71,8 +71,6 @@ def result_analysis(res_list: list[float]) -> dict[str, int | float]:
     log.info(f"Std. return: {std_return:.3f}")
     log.info(f"Std. error: {std_error:.3f}")
 
-    np.set_printoptions(formatter={"float": lambda x: "{:.3f}".format(x)})
-
     return {
         "avg_return": avg_return,
         "std_return": std_return,

@@ -34,7 +34,7 @@ from taxi_common import (
 
 
 EVAL_NUM_ENVS = 8
-EVAL_NUM_RUNS = 10000
+EVAL_NUM_RUNS = 1000000
 TAXI_ENV_POSSIBLE_STATES, _ = split_all_states_to_reachable_and_non()
 
 

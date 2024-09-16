@@ -1,0 +1,12 @@
+experiment_name: taxi_ppo_mlp_raw_al256_cr256x256tanh_3e6
+multirun_seeds: [434, 1536, 3260, 4839, 5055, 5800, 6121, 6315, 7117, 9482]
+
+use_decode_obs: False
+actor_latent_size: 256
+
+share_layer_with_critic: False
+mlp_actor_disable_bias: False
+track_gradients: False
+
+critic_latent_1: 256
+critic_latent_2: 256

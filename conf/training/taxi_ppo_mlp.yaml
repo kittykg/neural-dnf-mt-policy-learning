@@ -1,4 +1,4 @@
-experiment_name: taxi_ppo_mlp_no_bias_al256_cr256x256tanh_3e6
+experiment_name: taxi_ppo_mlp_al256_cr256x256tanh_3e6
 
 seed: null
 use_cuda: False
@@ -8,8 +8,8 @@ use_decode_obs: False
 actor_latent_size: 256
 
 share_layer_with_critic: False
-mlp_actor_disable_bias: True
-track_gradients: True
+mlp_actor_disable_bias: False
+track_gradients: False
 
 critic_latent_1: 256
 critic_latent_2: 256

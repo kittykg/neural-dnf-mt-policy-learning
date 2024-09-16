@@ -39,6 +39,7 @@ def single_model_eval(
     full_experiment_name: str,
     target_policy_csv_path: Path,
     device: torch.device,
+    use_argmax: bool = True,
 ) -> dict[str, Any]:
     use_ndnf = "ndnf" in full_experiment_name
     if isinstance(model, BlackjackNDNFEOAgent):
@@ -47,7 +48,9 @@ def single_model_eval(
         eval_model = model
     eval_model.eval()
 
-    env_eval_log = eval_on_environments(eval_model, device)
+    env_eval_log = eval_on_environments(
+        eval_model, device, use_argmax=use_argmax
+    )
 
     if use_ndnf:
         assert isinstance(eval_model, BlackjackNDNFBasedAgent)
@@ -232,6 +235,7 @@ def result_analysis(
 def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
     experiment_name = f"{eval_cfg['experiment_name']}"
     use_ndnf = "ndnf" in experiment_name
+    use_argmax = eval_cfg.get("use_argmax", True)
 
     target_policy_csv_path = Path(eval_cfg["target_policy_csv_path"])
     if not target_policy_csv_path.exists():
@@ -261,12 +265,18 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         log.info(f"Experiment {model_dir.name} loaded!")
 
         eval_log = single_model_eval(
-            model, full_experiment_name, target_policy_csv_path, DEVICE
+            model,
+            full_experiment_name,
+            target_policy_csv_path,
+            DEVICE,
+            use_argmax=use_argmax,
         )
         single_eval_results.append(eval_log)
 
     log.info("Evaluation finished!")
-    log.info(f"Results of {eval_cfg['experiment_name']}:")
+    log.info(
+        f"Results of {eval_cfg['experiment_name']} (argmax: {use_argmax}):"
+    )
     aggregated_log = result_analysis(
         single_eval_results,
     )

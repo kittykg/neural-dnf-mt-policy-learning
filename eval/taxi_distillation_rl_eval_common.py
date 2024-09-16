@@ -34,7 +34,7 @@ from taxi_common import (
 
 
 EVAL_NUM_ENVS = 8
-EVAL_NUM_RUNS = 1000
+EVAL_NUM_RUNS = 10000
 TAXI_ENV_POSSIBLE_STATES, _ = split_all_states_to_reachable_and_non()
 
 
@@ -65,7 +65,10 @@ class StateEvalLogKeys(Enum):
 
 
 def eval_get_ndnf_action(
-    ndnf_model: BaseNeuralDNF, obs: np.ndarray, device: torch.device
+    ndnf_model: BaseNeuralDNF,
+    obs: np.ndarray,
+    device: torch.device,
+    use_argmax: bool = True,
 ) -> tuple[Tensor, Tensor]:
     preprocessed_obs = taxi_env_preprocess_obs(
         obs, use_ndnf=True, device=device
@@ -79,8 +82,11 @@ def eval_get_ndnf_action(
     with torch.no_grad():
         if isinstance(ndnf_model, BaseNeuralDNFMutexTanh):
             all_form_dict = ndnf_model.get_all_forms(x)
-            action_dist = (all_form_dict["disjunction"]["mutex_tanh"] + 1) / 2
-            action = torch.argmax(action_dist, dim=1)
+            action_prob = (all_form_dict["disjunction"]["mutex_tanh"] + 1) / 2
+            if use_argmax:
+                action = torch.argmax(action_prob, dim=1)
+            else:
+                action = Categorical(probs=action_prob).sample()
             tanh_out = all_form_dict["disjunction"]["tanh"]
         else:
             out = ndnf_model(x)
@@ -110,6 +116,7 @@ def eval_get_ndnf_mt_action_dist(
 def eval_on_environments(
     ndnf_model: BaseNeuralDNF,
     device: torch.device,
+    use_argmax: bool = True,
     num_episodes: int = EVAL_NUM_RUNS,
 ) -> dict[str, Any]:
     # Convert NDNF-EO to plain NDNF
@@ -145,7 +152,9 @@ def eval_on_environments(
 
     while log_done_counter < num_episodes:
         with torch.no_grad():
-            actions, tanh_out = eval_get_ndnf_action(eval_model, obs, device)
+            actions, tanh_out = eval_get_ndnf_action(
+                eval_model, obs, device, use_argmax
+            )
 
         tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
         if np.any(tanh_action > 1):

@@ -61,8 +61,9 @@ def single_ndnf_mt_eval(
     device: torch.device = DEVICE,
     target_q_table: np.ndarray | None = None,
     target_action_dist: Categorical | None = None,
+    use_argmax: bool = True,
 ) -> dict[str, Any]:
-    env_eval_log = eval_on_environments(model, device)
+    env_eval_log = eval_on_environments(model, device, use_argmax=use_argmax)
 
     all_states_eval_log = eval_on_all_possible_states(
         ndnf_model=model,
@@ -225,6 +226,7 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
 
     use_decode_obs = eval_cfg["use_decode_obs"]
     model_type_str = eval_cfg["model_type"]
+    use_argmax = eval_cfg.get("use_argmax", True)
 
     model_type: BaseNeuralDNF = {
         "plain": NeuralDNF,
@@ -288,11 +290,14 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
             device=DEVICE,
             target_q_table=target_q_table,
             target_action_dist=target_action_dist,
+            use_argmax=use_argmax,
         )
         single_eval_results.append(eval_log)
 
     log.info("Evaluation finished!")
-    log.info(f"Results of {eval_cfg['experiment_name']}:")
+    log.info(
+        f"Results of {eval_cfg['experiment_name']} (argmax: {use_argmax}):"
+    )
     aggregated_log = result_analysis(
         single_eval_results,
     )

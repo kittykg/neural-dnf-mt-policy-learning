@@ -11,7 +11,6 @@ import sys
 import traceback
 from typing import Any, Callable
 
-import clingo
 import gymnasium as gym
 import hydra
 import numpy as np
@@ -38,7 +37,13 @@ from neural_dnf.post_training import (
     extract_asp_rules,
     get_thresholding_upper_bound,
 )
+
 from common import synthesize
+from eval.asp_inference_common import (
+    ASPRuleEvaluationFailureCode,
+    evaluate_rule_on_env,
+)
+from eval.common import SpecialStateCorridorFailureCode
 from ss_corridor_ppo import (
     construct_model,
     construct_single_environment,
@@ -48,15 +53,21 @@ from ss_corridor_ppo import (
     SSCPPONDNFEOAgent,
     SSCPPONDNFMutexTanhAgent,
 )
-from eval.common import SpecialStateCorridorFailureCode
 from utils import post_to_discord_webhook
 
 
-DEFAULT_GEN_SEED = 2
-NUM_PROCESSES = 8
-NUM_EPISODES = 100
-DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "ssc_ppo_storage"
+DEFAULT_GEN_SEED = 2
+DEVICE = torch.device("cpu")
+NUM_EPISODES = 100
+NUM_PROCESSES = 8
+
+FIRST_PRUNE_MODEL_PTH_NAME = "model_mr_pruned.pth"
+THRESHOLD_MODEL_PTH_NAME = "thresholded_model.pth"
+THRESHOLD_JSON_NAME = "threshold_val_candidates.json"
+SECOND_PRUNE_MODEL_PTH_NAME = "model_2nd_mr_pruned.pth"
+ASP_RULES_FILE_NAME = "asp_rules.lp"
+
 
 log = logging.getLogger()
 
@@ -289,16 +300,16 @@ def post_training(
     # Check for checkpoints
     # If the model is already pruned, then we load the pruned model
     # Otherwise, we prune the model and save the pruned model
-    if (model_dir / "model_mr_pruned.pth").exists():
+    if (model_dir / FIRST_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / "model_mr_pruned.pth", map_location=DEVICE
+            model_dir / FIRST_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(pruned_state)
     else:
         ret = prune_model()
         if ret is not None and isinstance(ret, SpecialStateCorridorFailureCode):
             return ret
-        torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
+        torch.save(model.state_dict(), model_dir / FIRST_PRUNE_MODEL_PTH_NAME)
 
     _simulate_with_print(_action_fn, f"{base_stage_name} pruned")
 
@@ -352,15 +363,15 @@ def post_training(
             og_disj_weight,
             t_vals_candidates[0],
         )
-        torch.save(model.state_dict(), model_dir / "thresholded_model.pth")
+        torch.save(model.state_dict(), model_dir / THRESHOLD_MODEL_PTH_NAME)
 
-    if (model_dir / "thresholded_model.pth").exists():
+    if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
         thresholded_state = torch.load(
-            model_dir / "thresholded_model.pth", map_location=DEVICE
+            model_dir / THRESHOLD_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(thresholded_state)
-    elif (model_dir / "threshold_val_candidates.json").exists():
-        with open(model_dir / "threshold_val_candidates.json", "r") as f:
+    elif (model_dir / THRESHOLD_JSON_NAME).exists():
+        with open(model_dir / THRESHOLD_JSON_NAME, "r") as f:
             threshold_json_dict = json.load(f)
             if not threshold_json_dict["threshold_success"]:
                 log.info(
@@ -374,7 +385,7 @@ def post_training(
     else:
         ret = threshold_model()
         threshold_json_dict = {}
-        with open(model_dir / "threshold_val_candidates.json", "w") as f:
+        with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
             if isinstance(ret, SpecialStateCorridorFailureCode):
                 threshold_json_dict["threshold_success"] = False
                 json.dump(threshold_json_dict, f)
@@ -386,82 +397,61 @@ def post_training(
         apply_threshold_with_candidate_list(t_vals_candidates)
 
     _simulate_with_print(_action_fn, f"{base_stage_name} (thresholded)")
-    log.info(model.actor.conjunctions.weights.data)
-    log.info(model.actor.disjunctions.weights.data)
-    log.info("\n")
 
     log.info("======================================")
 
-    # 4. Rule extraction
-    if (model_dir / "asp_rules.lp").exists():
-        with open(model_dir / "asp_rules.lp", "r") as f:
+    # Stage 4. Second prune after thresholding
+    # Again, check for checkpoints first
+    # If the model is already pruned, then we load the pruned model
+    # Otherwise, we prune the model and save the pruned model
+    if (model_dir / SECOND_PRUNE_MODEL_PTH_NAME).exists():
+        pruned_state = torch.load(
+            model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+        )
+        model.load_state_dict(pruned_state)
+    else:
+        ret = prune_model()
+        if ret is not None and isinstance(ret, SpecialStateCorridorFailureCode):
+            return ret
+        torch.save(model.state_dict(), model_dir / SECOND_PRUNE_MODEL_PTH_NAME)
+
+    _simulate_with_print(_action_fn, f"{base_stage_name} 2nd prune")
+
+    # 5. Rule extraction
+    if (model_dir / ASP_RULES_FILE_NAME).exists():
+        with open(model_dir / ASP_RULES_FILE_NAME, "r") as f:
             rules = f.readlines()
     else:
         rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
-        with open(model_dir / "asp_rules.lp", "w") as f:
+        with open(model_dir / ASP_RULES_FILE_NAME, "w") as f:
             f.write("\n".join(rules))
     for r in rules:
         log.info(r)
 
     log.info("======================================")
 
-    # 5. Evaluate Rule
-    obs, _ = single_env.reset()
-
-    terminated = False
-    truncated = False
-    reward_sum = 0
-
-    while not terminated and not truncated:
+    # 6. Evaluate Rule
+    def context_generation(obs: dict[str, np.ndarray]) -> list[str]:
         input_encoding = [f"a_{obs['agent_location']}."]
         log.info(input_encoding)
+        return input_encoding
 
-        ctl = clingo.Control(["--warn=none"])
-        show_statements = [
-            f"#show disj_{i}/0." for i in range(model.action_size)
-        ]
-        ctl.add("base", [], " ".join(input_encoding + show_statements + rules))
-        ctl.ground([("base", [])])
-        with ctl.solve(yield_=True) as handle:  # type: ignore
-            all_answer_sets = [str(a) for a in handle]
+    ret = evaluate_rule_on_env(
+        env=single_env,
+        context_encoding_generation_fn=context_generation,
+        num_actions=2,
+        rules=rules,
+        eval_num_episodes=1,
+        do_logging=True,
+    )
+    if isinstance(ret, ASPRuleEvaluationFailureCode):
+        return {
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET: SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION: SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION: SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED: SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED,
+        }[ret]
 
-        if len(all_answer_sets) != 1:
-            # No model or multiple answer sets, should not happen
-            log.info(f"No model or multiple answer sets when evaluating rules.")
-            return (
-                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
-            )
-
-        if all_answer_sets[0] == "":
-            log.info(f"No output action!")
-            return (
-                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-            )
-
-        output_classes = all_answer_sets[0].split(" ")
-        if len(output_classes) == 0:
-            log.info(f"No output action!")
-            return (
-                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-            )
-        output_classes_set = set([int(o[5:]) for o in output_classes])
-
-        if len(output_classes_set) != 1:
-            log.info(f"Output set: {output_classes_set} not exactly one item!")
-            return (
-                SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
-            )
-
-        action = list(output_classes_set)[0]
-        log.info(f"Action: {action}")
-        obs, reward, terminated, truncated, _ = single_env.step(action)
-        reward_sum += reward
-
-    if truncated:
-        log.info(f"Truncated: {reward_sum}")
-        return SpecialStateCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED
-
-    log.info(f"Reward sum: {reward_sum}")
     return 0
 
 

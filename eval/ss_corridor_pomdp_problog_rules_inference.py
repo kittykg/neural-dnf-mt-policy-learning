@@ -24,6 +24,7 @@ try:
 except ValueError:  # Already removed
     pass
 
+from common import synthesize
 from eval.problog_inference_common import (
     prolog_inference_in_env_single_run,
     prolog_inference_gen_action_dist_for_all_states,
@@ -271,6 +272,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
     close_dist_list = []
     avg_return_list = []
     avg_num_steps_list = []
+    all_return_lists = []
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
@@ -315,6 +317,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
             )
         else:
             close_dist_list.append(s)
+        all_return_lists.append(ret["return_per_episode"])
         avg_return_list.append(ret["avg_return_per_episode"])
         avg_num_steps_list.append(ret["avg_num_steps_per_episode"])
         log.info("======================================")
@@ -323,8 +326,21 @@ def post_interpret_inference(eval_cfg: DictConfig):
     log.info(
         f"Proportion: {len(close_dist_list) / len(eval_cfg['multirun_seeds'])}"
     )
-    log.info(f"Avg. return per episode: {np.mean(avg_return_list)}")
-    log.info(f"Avg. num steps: {np.mean(avg_num_steps_list)}")
+
+    # Flatten the return lists
+    flatten_return_lists = [i for l in all_return_lists for i in l]
+    synthesized_logs = synthesize(flatten_return_lists, compute_ste=True)
+    log.info(f"Avg. return per episode: {synthesized_logs['mean']}")
+    log.info(f"STE: {synthesized_logs['ste']}")
+
+    # Save the synthesized logs
+    with open(
+        f"{experiment_name}_problog_inference_aggregated_log.json",
+        "w",
+    ) as f:
+        json.dump(
+            {k: float(v) for k, v in synthesized_logs.items()}, f, indent=4
+        )
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")

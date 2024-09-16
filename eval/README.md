@@ -32,7 +32,7 @@ Switcheroo environment set.
 
     - MDP - ASP rules
         * Extraction: `ss_corridor_ppo_ndnf_multirun_eval.py`
-        * Inference: TODO
+        * Inference: `ss_corridor_asp_rules_inference.py`
     - POMDP - ProbLog rules
         * Extraction: `ss_corridor_ppo_pomdp_ndnf_multirun_eval.py` and
  `ss_corridor_ppo_pomdp_ndnf_mt_post_train_interpretation.py`

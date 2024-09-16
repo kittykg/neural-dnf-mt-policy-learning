@@ -2,15 +2,17 @@
 
 This directory contains scripts for evaluating the performance of the models.
 
-The relevant configs are in `conf/eval/`.
+The relevant configs are in `conf/eval/` .
 
 ## General files
 
+ `asp_inference_common.py`
+
  `common.py`
 
- `problog_inference_common.py`
-
  `ndnf_mt_problog_interpretation.py`
+
+ `problog_inference_common.py`
 
 ## Switcheroo Environment Set
 
@@ -92,4 +94,4 @@ Door Corridor environment.
 * NDNF-MT
     - Evaluate RL performance: `door_corridor_ppo_multirun_rl_performance_eval.py`
     - ASP rules extraction: `door_corridor_ppo_ndnf_mt_multirun_eval.py`
-    - ASP rules inference: TODO
+    - ASP rules inference: `door_corridor_asp_rules_inference.py`

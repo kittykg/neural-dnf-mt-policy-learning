@@ -8,7 +8,6 @@ import sys
 import traceback
 from typing import Any, Callable
 
-import clingo
 import gymnasium as gym
 import hydra
 import numpy as np
@@ -37,20 +36,32 @@ from neural_dnf.post_training import (
 )
 from common import synthesize
 from door_corridor_ppo import construct_model, make_env, DCPPONDNFMutexTanhAgent
+from eval.asp_inference_common import (
+    ASPRuleEvaluationFailureCode,
+    evaluate_rule_on_env,
+)
 from eval.common import DoorCorridorFailureCode
 from utils import post_to_discord_webhook
 
 
-DEFAULT_GEN_SEED = 2
-NUM_PROCESSES = 8
-NUM_EPISODES = 100
-DEVICE = torch.device("cpu")
 BASE_STORAGE_DIR = root / "dc_ppo_storage"
-log = logging.getLogger()
-single_env = DoorCorridorEnv(render_mode="rgb_array")
+DEFAULT_GEN_SEED = 2
+DEVICE = torch.device("cpu")
+NUM_EPISODES = 100
+NUM_PROCESSES = 8
+
+FIRST_PRUNE_MODEL_PTH_NAME = "model_mr_pruned.pth"
+THRESHOLD_MODEL_PTH_NAME = "thresholded_model.pth"
+THRESHOLD_JSON_NAME = "threshold_val_candidates.json"
+SECOND_PRUNE_MODEL_PTH_NAME = "model_2nd_mr_pruned.pth"
+ASP_RULES_FILE_NAME = "asp_rules.lp"
+
+
 envs = gym.vector.SyncVectorEnv(
     [make_env(i, i, False) for i in range(NUM_PROCESSES)]
 )
+single_env = DoorCorridorEnv(render_mode="rgb_array")
+log = logging.getLogger()
 
 
 def get_ndnf_action(
@@ -252,16 +263,16 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     # Check for checkpoints
     # If the model is already pruned, then we load the pruned model
     # Otherwise, we prune the model and save the pruned model
-    if (model_dir / "model_mr_pruned.pth").exists():
+    if (model_dir / FIRST_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / "model_mr_pruned.pth", map_location=DEVICE
+            model_dir / FIRST_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(pruned_state)
     else:
         ret = prune_model()
         if ret is not None and isinstance(ret, DoorCorridorFailureCode):
             return ret
-        torch.save(model.state_dict(), model_dir / "model_mr_pruned.pth")
+        torch.save(model.state_dict(), model_dir / FIRST_PRUNE_MODEL_PTH_NAME)
 
     _simulate_with_print(_ndnf_mt_dis_action_fn, f"NDNF MT dis pruned")
 
@@ -313,15 +324,15 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             og_disj_weight,
             t_vals_candidates[0],
         )
-        torch.save(model.state_dict(), model_dir / "thresholded_model.pth")
+        torch.save(model.state_dict(), model_dir / THRESHOLD_MODEL_PTH_NAME)
 
-    if (model_dir / "thresholded_model.pth").exists():
+    if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
         thresholded_state = torch.load(
-            model_dir / "thresholded_model.pth", map_location=DEVICE
+            model_dir / THRESHOLD_MODEL_PTH_NAME, map_location=DEVICE
         )
         model.load_state_dict(thresholded_state)
-    elif (model_dir / "threshold_val_candidates.json").exists():
-        with open(model_dir / "threshold_val_candidates.json", "r") as f:
+    elif (model_dir / THRESHOLD_JSON_NAME).exists():
+        with open(model_dir / THRESHOLD_JSON_NAME, "r") as f:
             threshold_json_dict = json.load(f)
             if not threshold_json_dict["threshold_success"]:
                 log.info(
@@ -333,7 +344,7 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     else:
         ret = threshold_model()
         threshold_json_dict = {}
-        with open(model_dir / "threshold_val_candidates.json", "w") as f:
+        with open(model_dir / THRESHOLD_JSON_NAME, "w") as f:
             if isinstance(ret, DoorCorridorFailureCode):
                 threshold_json_dict["threshold_success"] = False
                 json.dump(threshold_json_dict, f)
@@ -348,27 +359,40 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
 
     log.info("======================================")
 
-    # 4. Rule extraction
-    if (model_dir / "asp_rules.lp").exists():
-        with open(model_dir / "asp_rules.lp", "r") as f:
+    # Stage 4. Second prune after thresholding
+    # Again, check for checkpoints first
+    # If the model is already pruned, then we load the pruned model
+    # Otherwise, we prune the model and save the pruned model
+    if (model_dir / SECOND_PRUNE_MODEL_PTH_NAME).exists():
+        pruned_state = torch.load(
+            model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+        )
+        model.load_state_dict(pruned_state)
+    else:
+        ret = prune_model()
+        if ret is not None and isinstance(ret, DoorCorridorFailureCode):
+            return ret
+        torch.save(model.state_dict(), model_dir / SECOND_PRUNE_MODEL_PTH_NAME)
+
+    _simulate_with_print(_ndnf_mt_dis_action_fn, f"NDNF MT dis 2nd prune")
+
+    log.info("======================================")
+
+    # 5. Rule extraction
+    if (model_dir / ASP_RULES_FILE_NAME).exists():
+        with open(model_dir / ASP_RULES_FILE_NAME, "r") as f:
             rules = f.readlines()
     else:
         rules: list[str] = extract_asp_rules(model.actor.state_dict())  # type: ignore
-        with open(model_dir / "asp_rules.lp", "w") as f:
+        with open(model_dir / ASP_RULES_FILE_NAME, "w") as f:
             f.write("\n".join(rules))
     for r in rules:
         log.info(r)
 
     log.info("======================================")
 
-    # 5. Evaluate Rule
-    obs, _ = single_env.reset()
-
-    terminated = False
-    truncated = False
-    reward_sum = 0
-
-    while not terminated and not truncated:
+    # 6. Evaluate Rule
+    def context_generation(obs: dict[str, np.ndarray]) -> list[str]:
         with torch.no_grad():
             raw_img_encoding = model.get_img_encoding(
                 preprocessed_obs={
@@ -381,48 +405,24 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
             f"a_{a.item()}." for a in torch.nonzero(raw_img_encoding > 0)
         ]
         log.info(img_encoding)
+        return img_encoding
 
-        ctl = clingo.Control(["--warn=none"])
-        show_statements = [
-            f"#show disj_{i}/0."
-            for i in range(DoorCorridorEnv.get_num_actions())
-        ]
-        ctl.add("base", [], " ".join(img_encoding + show_statements + rules))
-        ctl.ground([("base", [])])
-        with ctl.solve(yield_=True) as handle:  # type: ignore
-            all_answer_sets = [str(a) for a in handle]
+    ret = evaluate_rule_on_env(
+        env=single_env,
+        context_encoding_generation_fn=context_generation,
+        num_actions=DoorCorridorEnv.get_num_actions(),
+        rules=rules,
+        eval_num_episodes=1,
+        do_logging=True,
+    )
+    if isinstance(ret, ASPRuleEvaluationFailureCode):
+        return {
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET: DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION: DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION: DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION,
+            ASPRuleEvaluationFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED: DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED,
+        }[ret]
 
-        if len(all_answer_sets) != 1:
-            # No model or multiple answer sets, should not happen
-            log.info(f"No model or multiple answer sets when evaluating rules.")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_NOT_ONE_ANSWER_SET
-
-        if all_answer_sets[0] == "":
-            log.info(f"No output action!")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-
-        output_classes = all_answer_sets[0].split(" ")
-        if len(output_classes) == 0:
-            log.info(f"No output action!")
-            return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MISSING_ACTION
-        output_classes_set = set([int(o[5:]) for o in output_classes])
-
-        if len(output_classes_set) != 1:
-            log.info(f"Output set: {output_classes_set} not exactly one item!")
-            return (
-                DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_MORE_THAN_ONE_ACTION
-            )
-
-        action = list(output_classes_set)[0]
-        log.info(f"Action: {action}")
-        obs, reward, terminated, truncated, _ = single_env.step(action)
-        reward_sum += reward
-
-    if truncated:
-        log.info(f"Truncated: {reward_sum}")
-        return DoorCorridorFailureCode.FAIL_AT_RULE_EVAL_TRUNCATED
-
-    log.info(f"Reward sum: {reward_sum}")
     return 0
 
 
@@ -506,6 +506,8 @@ def run_eval(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    torch.set_warn_always(False)
+
     import multiprocessing as mp
 
     if mp.get_start_method() != "forkserver":

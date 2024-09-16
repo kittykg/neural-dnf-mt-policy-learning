@@ -1,4 +1,5 @@
 # This script evaluates PPO agents on SpecialStateCorridor envs
+import json
 import logging
 from pathlib import Path
 import random
@@ -184,6 +185,11 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, float]:
     for k, v in return_per_episode.items():
         log_str += f"{METRIC_TO_SYMBOL_MAP[k]} {v:.3f} "
     log.info(log_str)
+
+    with open("aggregated_log.json", "w") as f:
+        json.dump(
+            {k: float(v) for k, v in return_per_episode.items()}, f, indent=4
+        )
 
     return return_per_episode
 

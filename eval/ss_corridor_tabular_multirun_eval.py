@@ -29,7 +29,7 @@ from ss_corridor_tabular import SSCorridorWallStatusMap, N_ACTIONS
 from utils import post_to_discord_webhook
 
 DEFAULT_GEN_SEED = 3
-SSC_SINGLE_ENV_NUM_EPISODES = 100
+SSC_SINGLE_ENV_NUM_EPISODES = 1000000
 BASE_STORAGE_DIR = root / "results"
 
 

@@ -223,19 +223,49 @@ def rule_simplification_with_all_possible_states(
     duplicate_mapping = condensation_dict["duplicate_mapping"]
 
     with torch.no_grad():
-        truth_table = torch.tanh(ndnf_mt.conjunctions(input_tensor)).sign()[
+        tanh_conj_out = torch.tanh(ndnf_mt.conjunctions(input_tensor))[
             :, used_conjunctions
         ]
+        truth_table = tanh_conj_out.sign()
+        mt_out = ndnf_mt(input_tensor)
+        prob = (mt_out + 1) / 2
+
+    assert torch.allclose(
+        tanh_conj_out, truth_table, atol=1e-4
+    ), "Tanh conj output and the truth table are not close!"
 
     # Remove any duplicate entries in the truth table
-    truth_table = truth_table.unique(dim=0)
+    new_truth_table, inverse_indices = truth_table.unique(
+        dim=0, return_inverse=True
+    )
+    log.info(
+        "Truth table no. entry change: "
+        f"{len(truth_table)} -> {len(new_truth_table)}"
+    )
+
+    index_mapping = {i: [] for i in range(len(new_truth_table))}
+    for j, i in enumerate(inverse_indices):
+        index_mapping[i.item()].append(j)
+
+    # Check if the probabilities are the same for the duplicated entries
+    all_close = []
+    new_prob = []
+    for i in range(len(new_truth_table)):
+        v = index_mapping[i]
+        target_comp = prob[v][0].repeat((len(v), 1))
+        new_prob.append(prob[v][0])
+        all_close.append(torch.allclose(prob[v], target_comp, atol=1e-3))
+
+    assert all(
+        all_close
+    ), "Probabilities are not the same for the duplicated entries!"
 
     # Check if any conjunction is always true or always false
     always_true = []
     always_false = []
 
     for i, t in enumerate(truth_table.T):
-        conj_id = list(condensation_dict["conjunction_map"].keys())[i]
+        conj_id = used_conjunctions[i]
         if torch.all(t == 1):
             log.info(f"Conjunction {conj_id} is always true")
             always_true.append(conj_id)
@@ -252,19 +282,19 @@ def rule_simplification_with_all_possible_states(
         b = disjunction_bias[disj_id]
 
         for a in disjuncts:
-            weight = ndnf_mt.disjunctions.weights[disj_id, a.id]
-            if a.id in always_true:
-                b += weight
-                continue
-
-            if a.id in always_false:
-                b += -1 * weight
-                continue
-
             a_id = a.id
             if a.id in duplicate_mapping and a.map_to_id != -1:
                 assert a.map_to_id == duplicate_mapping[a.id]
                 a_id = duplicate_mapping[a.id]
+
+            weight = ndnf_mt.disjunctions.weights[disj_id, a_id]
+            if a_id in always_true:
+                b += weight
+                continue
+
+            if a_id in always_false:
+                b += -1 * weight
+                continue
 
             body.append(f"{weight:.4f} conj_{a_id}")
 
@@ -275,33 +305,13 @@ def rule_simplification_with_all_possible_states(
     for eq in weighted_logic_equations:
         log.info(eq)
 
-    # Refill the truth_table
-    full_conjunction_table = torch.zeros(
-        (len(truth_table), ndnf_mt.conjunctions.weights.shape[0]),
-        device=input_tensor.device,
-    )
-    duplicate_mapping_reverse = condensation_dict["duplicate_mapping_reverse"]
-
-    for i, t in enumerate(truth_table):
-        for j, v in enumerate(t):
-            conj_id = used_conjunctions[j]
-            full_conjunction_table[i, conj_id] = v
-
-            if conj_id in duplicate_mapping_reverse:
-                for mapped_to_id in duplicate_mapping_reverse[conj_id]:
-                    full_conjunction_table[i, mapped_to_id] = v
-
-    with torch.no_grad():
-        mt_out = ndnf_mt.disjunctions(full_conjunction_table)
-    prob = (mt_out + 1) / 2
-
     return {
-        "truth_table": truth_table,
+        "truth_table": new_truth_table,
         "used_conjunctions": used_conjunctions,
         "always_true": always_true,
         "always_false": always_false,
         "weighted_logic_equations": weighted_logic_equations,
-        "prob": prob,
+        "prob": new_prob,
     }
 
 
@@ -315,14 +325,14 @@ def problog_rule_generation(
     Return a list of ProbLog rules.
     """
 
-    def cast_probabilities_to_3_decimal(prob) -> list[float]:
-        new_prob = []
-        for i in range(len(prob) - 1):
-            p = prob[i]
-            new_prob.append(round(p.item(), 3))
-        last_p = 1 - sum(new_prob)
-        new_prob.append(last_p)
-        return new_prob
+    def cast_probabilities_to_3_decimal(p) -> list[float]:
+        cast_prob = []
+        for i in range(len(p) - 1):
+            v = p[i]
+            cast_prob.append(round(v.item(), 3))
+        last_v = 1 - sum(cast_prob)
+        cast_prob.append(last_v)
+        return cast_prob
 
     truth_table = rule_simplification_dict["truth_table"]
     prob = rule_simplification_dict["prob"]
@@ -331,11 +341,12 @@ def problog_rule_generation(
     always_false = rule_simplification_dict["always_false"]
 
     # Compute pure problog rules
+    not_used_alway_true_or_false_conjunctions = []
     problog_rules = []
     for i, entry in enumerate(truth_table):
         rule_head = []
         three_decimal_prob = cast_probabilities_to_3_decimal(prob[i])
-        for disj_id in range(prob.shape[1]):
+        for disj_id in range(len(prob[i])):
             rule_head.append(
                 f"{three_decimal_prob[disj_id]:.3f}::action({disj_id})"
             )
@@ -344,7 +355,12 @@ def problog_rule_generation(
         rule_body = []
         for j, v in enumerate(entry):
             conj_id = used_conjunctions[j]
-            if conj_id in always_true or conj_id in always_false:
+            if (
+                len(entry) > 1
+                and conj_id in always_true
+                or conj_id in always_false
+            ):
+                not_used_alway_true_or_false_conjunctions.append(conj_id)
                 continue
             if v == 1:
                 rule_body.append(f"conj_{conj_id}")
@@ -358,7 +374,7 @@ def problog_rule_generation(
         "conjunction_map"
     ]
     for conj_id, conjuncts in conjunction_map.items():
-        if conj_id in always_true or conj_id in always_false:
+        if conj_id in not_used_alway_true_or_false_conjunctions:
             continue
 
         if conj_id not in used_conjunctions:

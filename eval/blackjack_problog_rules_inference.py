@@ -33,6 +33,7 @@ from blackjack_common import (
     construct_single_environment,
     create_policy_plots_from_action_distribution,
 )
+from common import synthesize
 from eval.blackjack_ppo_rl_eval_common import (
     eval_on_environments,
     ndnf_based_agent_cmp_target_csv,
@@ -200,6 +201,7 @@ def inference(
             problog_rules, use_argmax=use_argmax
         )
     log.info(f"Win rate: {eval_logs['win_rate']}")
+    log.info(f"Avg. return per episode: {eval_logs['avg_return_per_episode']}")
 
     # Generate examples
     examples = problog_inference_generate_examples(problog_rules)
@@ -239,6 +241,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
 
     close_dist_list = []
     win_rate_list = []
+    avg_return_per_episode_list = []
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
@@ -284,6 +287,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
         else:
             close_dist_list.append(s)
         win_rate_list.append(ret["win_rate"])
+        avg_return_per_episode_list.append(ret["avg_return_per_episode"])
         log.info("======================================")
 
     log.info(f"Close distributions runs: {close_dist_list}")
@@ -291,6 +295,19 @@ def post_interpret_inference(eval_cfg: DictConfig):
         f"Proportion: {len(close_dist_list) / len(eval_cfg['multirun_seeds'])}"
     )
     log.info(f"Avg. win rate: {np.mean(win_rate_list)}")
+    log.info(f"Avg. return per episode: {np.mean(avg_return_per_episode_list)}")
+
+    aggregated_logs = {}
+    aggregated_logs["close_dist_list"] = close_dist_list
+    for k, v in synthesize(win_rate_list, compute_ste=True).items():
+        aggregated_logs[f"avg_win_rate_{k}"] = float(v)
+    for k, v in synthesize(
+        avg_return_per_episode_list, compute_ste=True
+    ).items():
+        aggregated_logs[f"avg_return_per_episode_{k}"] = float(v)
+
+    with open("blackjack_problog_inference_aggregated_logs.json", "w") as f:
+        json.dump(aggregated_logs, f, indent=4)
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -338,4 +355,10 @@ def run_eval(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
     torch.set_warn_always(False)
+
+    import multiprocessing as mp
+
+    if mp.get_start_method() != "fork":
+        mp.set_start_method("fork", force=True)
+
     run_eval()

@@ -1,6 +1,6 @@
 # This script soft extracts (prune and threshold on conjunctions) the NDNF-MT
 # actor trained on the Blackjack environment, based on the comparison result on
-# a target Q-value table. This script is the pre-requisite for the problog
+# a target Q-value table. This script is the pre-requisite for the ProbLog
 # interpretation script.
 from copy import deepcopy
 import json
@@ -12,10 +12,10 @@ import traceback
 from typing import Any
 
 import numpy as np
-import numpy.typing as npt
 import hydra
 from omegaconf import DictConfig
 import torch
+import torch.nn.functional as F
 
 file = Path(__file__).resolve()
 parent, root = file.parent, file.parents[1]
@@ -87,7 +87,7 @@ def post_training(
             og_action_dist = og_log["action_distribution"]
             new_action_dist = new_log["action_distribution"]
 
-            return np.allclose(og_action_dist, new_action_dist, atol=1e-2)
+            return np.allclose(og_action_dist, new_action_dist, atol=1e-3)
 
         sd_list = []
         prune_count = 0
@@ -156,16 +156,6 @@ def post_training(
     # 3. Thresholding
     og_conj_weight = model.actor.conjunctions.weights.data.clone()
 
-    # calculate the kl divergence between two distributions p and q, where p is
-    # the true distribution (action dist after pruning) and q is the estimated
-    # distribution (thresholded action dist)
-    def kl_divergence(p: npt.NDArray, q: npt.NDArray) -> float:
-        return float(np.mean(np.where(p != 0, p * np.log(p / q), 0)))
-
-    # Convert the agent to plain NDNF agent
-    model = model.to_ndnf_agent()  # type: ignore
-    model.eval()
-
     def threshold_model() -> dict[str, float]:
         log.info("Thresholding the model conjunction...")
 
@@ -190,10 +180,11 @@ def post_training(
                 target_policy_csv_path, model, DEVICE
             )
             r["t_val"] = v.item()
-            r["kl"] = kl_divergence(
-                post_prune_logs["action_distribution"],
-                r["action_distribution"],
-            )
+            r["kl"] = F.kl_div(
+                input=torch.log(torch.tensor(r["action_distribution"]) + 1e-8),
+                target=torch.tensor(post_prune_logs["action_distribution"]),
+                reduction="batchmean",
+            ).item()
             result_dicts.append(r)
 
         log.info("Proceed to threshold based on KL...")
@@ -265,10 +256,13 @@ def post_training(
         torch.save(model.state_dict(), model_dir / SECOND_PRUNE_MODEL_PTH_NAME)
 
     second_prune_logs = _simulate_with_print(f"NDNF MT Soft 2nd prune")
-    kl = kl_divergence(
-        post_prune_logs["action_distribution"],
-        second_prune_logs["action_distribution"],
-    )
+    kl = F.kl_div(
+        input=torch.log(
+            torch.tensor(second_prune_logs["action_distribution"]) + 1e-8
+        ),
+        target=torch.tensor(post_prune_logs["action_distribution"]),
+        reduction="batchmean",
+    ).item()
     log.info(f"KL divergence cmp to after 1st prune: {kl}")
 
     return second_prune_logs

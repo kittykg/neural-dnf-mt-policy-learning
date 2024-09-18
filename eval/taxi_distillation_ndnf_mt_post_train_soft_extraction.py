@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 import torch
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
@@ -35,15 +35,11 @@ from eval.common import ToyTextSoftExtractionReturnCode
 from eval.taxi_distillation_rl_eval_common import (
     eval_on_all_possible_states,
     eval_on_environments,
+    get_target_q_table_and_action_dist,
     EnvEvalLogKeys,
     StateEvalLogKeys,
 )
 from taxi_common import N_ACTIONS, N_OBSERVATION_SIZE, N_DECODE_OBSERVATION_SIZE
-from taxi_distillation import (
-    load_mlp_model,
-    generate_data_from_mlp,
-    load_target_q_table,
-)
 from utils import post_to_discord_webhook
 
 
@@ -347,29 +343,9 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
     assert eval_cfg["model_type"] == "mt"
     use_decode_obs = eval_cfg["use_decode_obs"]
 
-    target_q_table = None
-    target_action_dist = None
-
-    if eval_cfg["distillation_mlp"]["mlp_model_path"] is not None:
-        # Pass a dummy config to load_model
-        distillation_mlp_cfg: dict[str, Any] = OmegaConf.to_container(
-            eval_cfg["distillation_mlp"].copy()
-        )  # type: ignore
-        mlp_model_path_str = distillation_mlp_cfg.pop("mlp_model_path")
-        mlp_model = load_mlp_model(
-            model_architecture_cfg=distillation_mlp_cfg,
-            mlp_model_path_str=mlp_model_path_str,
-            device=DEVICE,
-        )
-        _, target_action_dist = generate_data_from_mlp(mlp_model, DEVICE)
-
-    else:
-        assert (
-            eval_cfg["distillation_tab_q"]["tab_q_path"] is not None
-        ), "Either mlp_model_path or tab_q_path must be provided"
-
-        tab_q_path_str = eval_cfg["distillation_tab_q"]["tab_q_path"]
-        target_q_table = load_target_q_table(tab_q_path_str)
+    target_q_table, target_action_dist = get_target_q_table_and_action_dist(
+        eval_cfg, DEVICE
+    )
 
     post_training_fail_runs: list[int] = []
 

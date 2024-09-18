@@ -114,9 +114,10 @@ def interpret(
     # table.
     # - The probabilities are used in the annotated disjunctions head.
     # - The rule body is the entry of the truth table.
-    problog_rules = problog_rule_generation(
+    rule_gen_dict = problog_rule_generation(
         rule_simplification_dict, condensation_dict
     )
+    problog_rules = rule_gen_dict["problog_rules"]
 
     return {
         "problog_rules": problog_rules,

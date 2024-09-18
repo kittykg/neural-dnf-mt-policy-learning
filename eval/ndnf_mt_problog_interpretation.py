@@ -75,9 +75,10 @@ class Atom:
 # - The probabilities are used in the annotated disjunctions head.
 # - The rule body is the entry of the truth table.
 # e.g.
-# problog_rules = problog_rule_generation(
+# rule_gen_dict = problog_rule_generation(
 #     rule_simplification_dict, condensation_dict
 # )
+# problog_rules = rule_gen_dict["problog_rules"]
 
 
 # ==============================================================================
@@ -317,12 +318,15 @@ def rule_simplification_with_all_possible_states(
 
 # Step 4: Generate ProbLog rules with annotated disjunction based on experienced
 def problog_rule_generation(
-    rule_simplification_dict: dict[str, Any], condensation_dict: dict[str, Any]
-) -> list[str]:
+    rule_simplification_dict: dict[str, Any],
+    condensation_dict: dict[str, Any],
+    gen_asp: bool = False,
+) -> dict[str, list[str]]:
     """
     Generate ProbLog rules with annotated disjunction based on experienced
-    observations.
-    Return a list of ProbLog rules.
+    observations. If `gen_asp` is True, we generate ASP rules to reduce
+    inference time. ASP: conj -> rule ProbLog: rule -> action Return a
+    dictionary with all different type of rules.
     """
 
     def cast_probabilities_to_3_decimal(p) -> list[float]:
@@ -343,8 +347,14 @@ def problog_rule_generation(
     # Compute pure problog rules
     not_used_alway_true_or_false_conjunctions = []
     problog_rules = []
+    problog_rule_with_asp = []
+    asp_rules_for_problog = []
+
+    # Generate annotated disjunctions
     for i, entry in enumerate(truth_table):
         rule_head = []
+        rule_body = []
+
         three_decimal_prob = cast_probabilities_to_3_decimal(prob[i])
         for disj_id in range(len(prob[i])):
             rule_head.append(
@@ -352,7 +362,9 @@ def problog_rule_generation(
             )
         rule_head = " ; ".join(rule_head)
 
-        rule_body = []
+        if gen_asp:
+            asp_rule_body = []
+
         for j, v in enumerate(entry):
             conj_id = used_conjunctions[j]
             if (
@@ -364,12 +376,24 @@ def problog_rule_generation(
                 continue
             if v == 1:
                 rule_body.append(f"conj_{conj_id}")
+                if gen_asp:
+                    asp_rule_body.append(f"conj_{conj_id}")
+
             elif v == -1:
                 rule_body.append(f"\+conj_{conj_id}")  # type: ignore
+                if gen_asp:
+                    asp_rule_body.append(f"not conj_{conj_id}")
 
         rule_body = ", ".join(rule_body)
         problog_rules.append(f"{rule_head} :- {rule_body}.")
 
+        if gen_asp:
+            asp_rules_for_problog.append(
+                f"rule({i}) :- {', '.join(asp_rule_body)}."
+            )
+            problog_rule_with_asp.append(f"{rule_head} :- rule({i}).")
+
+    # Generate non-probablistic rules
     conjunction_map: dict[int, list[Atom]] = condensation_dict[
         "conjunction_map"
     ]
@@ -382,15 +406,32 @@ def problog_rule_generation(
 
         rule_head = f"conj_{conj_id}"
         rule_body = []
+
+        if gen_asp:
+            asp_rule_body = []
+
         for a in conjuncts:
             if a.positive:
                 rule_body.append(f"input({a.id})")
+                if gen_asp:
+                    asp_rule_body.append(f"input({a.id})")
             else:
                 rule_body.append(f"\+input({a.id})")  # type: ignore
+                if gen_asp:
+                    asp_rule_body.append(f"not input({a.id})")
+
         rule_body = ", ".join(rule_body)
         problog_rules.append(f"{rule_head} :- {rule_body}.")
+        if gen_asp:
+            asp_rules_for_problog.append(
+                f"conj_{conj_id} :- {', '.join(asp_rule_body)}."
+            )
 
     for r in problog_rules:
         log.info(r)
 
-    return problog_rules
+    return {
+        "problog_rules": problog_rules,
+        "problog_rule_with_asp": problog_rule_with_asp,
+        "asp_rules_for_problog": asp_rules_for_problog,
+    }

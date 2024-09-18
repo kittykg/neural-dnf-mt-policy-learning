@@ -6,6 +6,7 @@ from typing import Any
 import gymnasium as gym
 from gymnasium.vector import SyncVectorEnv
 import numpy as np
+from omegaconf import DictConfig, OmegaConf
 import torch
 from torch import Tensor
 from torch.distributions.categorical import Categorical
@@ -30,6 +31,11 @@ from taxi_common import (
     N_OBSERVATION_SIZE,
     split_all_states_to_reachable_and_non,
     taxi_env_preprocess_obs,
+)
+from taxi_distillation_common import (
+    load_mlp_model,
+    generate_data_from_mlp,
+    load_target_q_table,
 )
 
 
@@ -309,3 +315,33 @@ def eval_on_all_possible_states(
     )
 
     return logs
+
+
+def get_target_q_table_and_action_dist(
+    eval_cfg: DictConfig, device: torch.device
+) -> tuple[np.ndarray | None, Categorical | None]:
+    target_q_table = None
+    target_action_dist = None
+
+    if eval_cfg["distillation_mlp"]["mlp_model_path"] is not None:
+        # Pass a dummy config to load_model
+        distillation_mlp_cfg: dict[str, Any] = OmegaConf.to_container(
+            eval_cfg["distillation_mlp"].copy()
+        )  # type: ignore
+        mlp_model_path_str = distillation_mlp_cfg.pop("mlp_model_path")
+        mlp_model = load_mlp_model(
+            model_architecture_cfg=distillation_mlp_cfg,
+            mlp_model_path_str=mlp_model_path_str,
+            device=device,
+        )
+        _, target_action_dist = generate_data_from_mlp(mlp_model, device)
+
+    else:
+        assert (
+            eval_cfg["distillation_tab_q"]["tab_q_path"] is not None
+        ), "Either mlp_model_path or tab_q_path must be provided"
+
+        tab_q_path_str = eval_cfg["distillation_tab_q"]["tab_q_path"]
+        target_q_table = load_target_q_table(tab_q_path_str)
+
+    return target_q_table, target_action_dist

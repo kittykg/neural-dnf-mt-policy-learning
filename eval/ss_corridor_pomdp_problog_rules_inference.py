@@ -272,7 +272,6 @@ def post_interpret_inference(eval_cfg: DictConfig):
     close_dist_list = []
     avg_return_list = []
     avg_num_steps_list = []
-    all_return_lists = []
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
@@ -317,7 +316,6 @@ def post_interpret_inference(eval_cfg: DictConfig):
             )
         else:
             close_dist_list.append(s)
-        all_return_lists.append(ret["return_per_episode"])
         avg_return_list.append(ret["avg_return_per_episode"])
         avg_num_steps_list.append(ret["avg_num_steps_per_episode"])
         log.info("======================================")
@@ -328,8 +326,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
     )
 
     # Flatten the return lists
-    flatten_return_lists = [i for l in all_return_lists for i in l]
-    synthesized_logs = synthesize(flatten_return_lists, compute_ste=True)
+    synthesized_logs = synthesize(avg_return_list, compute_ste=True)
     log.info(f"Avg. return per episode: {synthesized_logs['mean']}")
     log.info(f"STE: {synthesized_logs['ste']}")
 

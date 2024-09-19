@@ -1,5 +1,12 @@
 # This script evaluates the ProbLog rules extracted from the NDNF-MT actor
 # trained on the Taxi environment.
+# Since ProbLog inference is computationally heavy, we do not run ProbLog at all
+# for this evaluation specifically. Instead, we check that only one rule can be
+# fired per state. If this is satisfied, then we use the DNF-MT actor for
+# evaluation.
+# We do leave all the ProbLog inference code in this script, but it is not
+# executed.
+from enum import IntEnum
 import json
 import logging
 from pathlib import Path
@@ -8,6 +15,7 @@ import sys
 import traceback
 from typing import Any
 
+import clingo
 import hydra
 import numpy as np
 from omegaconf import DictConfig
@@ -35,6 +43,7 @@ from eval.taxi_distillation_rl_eval_common import (
     eval_on_all_possible_states,
     eval_on_environments,
     get_target_q_table_and_action_dist,
+    EnvEvalLogKeys,
     StateEvalLogKeys,
 )
 from eval.problog_inference_common import (
@@ -64,6 +73,18 @@ TAXI_ENV_POSSIBLE_STATES, _ = split_all_states_to_reachable_and_non()
 
 logging.getLogger("problog").setLevel(logging.WARNING)
 log = logging.getLogger()
+
+
+class TaxiInferenceVerificationFailureCode(IntEnum):
+    NO_STABLE_MODEL = -1
+    MULTIPLE_STABLE_MODELS = -2
+    NO_OUTPUT_RULE = -3
+    MULTIPLE_OUTPUT_RULES = -4
+
+
+# ============================================================================ #
+#                              ProbLog Inference                               #
+# ============================================================================ #
 
 
 def taxi_problog_context_gen_fn(use_decode_obs: bool, obs: int) -> list[str]:
@@ -181,7 +202,7 @@ def problog_inference_on_all_states(
     return close_dist, problog_act_dist
 
 
-def inference(
+def inference_with_problog(
     problog_rules: list[str],
     model: NeuralDNFMutexTanh,
     model_dir: Path,
@@ -240,6 +261,112 @@ def inference(
     }
 
 
+# ============================================================================ #
+#                   NDNF-MT Inference with ASP verification                    #
+# ============================================================================ #
+
+
+def check_asp_rules_mutual_exclusive(
+    asp_rules_for_problog: list[str],
+) -> tuple[bool, TaxiInferenceVerificationFailureCode | None]:
+    """
+    This function checks the ASP rules used before ProbLog inference are
+    mutually exclusive. That is, for a given state, only one rule should be
+    fired, and this is enforced over all possible states.
+    """
+    # Verify that the ASP rules only have 1 fired per state
+    show_statements = [f"#show rule/1."]
+
+    for obs in TAXI_ENV_POSSIBLE_STATES:
+        context_program = [f"input({obs})."]
+        ctl = clingo.Control(["--warn=none"])
+        ctl.add(
+            "base",
+            [],
+            " ".join(context_program + asp_rules_for_problog + show_statements),
+        )
+        ctl.ground([("base", [])])
+        with ctl.solve(yield_=True) as handle:  # type: ignore
+            all_answer_sets = [str(a) for a in handle]
+
+            if len(all_answer_sets) == 0:
+                # No model or multiple answer sets, should not happen
+                log.info(f"No model when evaluating rules.")
+                return (
+                    False,
+                    TaxiInferenceVerificationFailureCode.NO_STABLE_MODEL,
+                )
+            elif len(all_answer_sets) > 1:
+                # Multiple models, should not happen
+                log.info(f"Multiple models when evaluating rules.")
+                return (
+                    False,
+                    TaxiInferenceVerificationFailureCode.MULTIPLE_STABLE_MODELS,
+                )
+
+            answer_set = all_answer_sets[0]
+
+            if answer_set == "":
+                log.info(f"No output rule!")
+                return (
+                    False,
+                    TaxiInferenceVerificationFailureCode.NO_OUTPUT_RULE,
+                )
+
+            output_rules = answer_set.split(" ")
+            if len(output_rules) > 1:
+                log.info(f"Output classes length is not 1 at obs {obs}")
+                return (
+                    False,
+                    TaxiInferenceVerificationFailureCode.MULTIPLE_OUTPUT_RULES,
+                )
+
+    return True, None
+
+
+def inference_with_asp_verification(
+    asp_rules_for_problog: list[str],
+    model: NeuralDNFMutexTanh,
+    use_argmax: bool = False,
+    target_q_table: np.ndarray | None = None,
+    target_action_dist: Categorical | None = None,
+):
+
+    log.info(
+        "Checking if ASP rules for ProbLog satisfy mutual exclusion every "
+        "state..."
+    )
+    passed, error_code = check_asp_rules_mutual_exclusive(asp_rules_for_problog)
+    if not passed:
+        log.info(f"Verification failed with error code {error_code}")
+        return {
+            "verification_passed": False,
+            "verification_error_code": error_code,
+        }
+
+    log.info("Verification successful. Using NDNF-MT agent for evaluation...")
+    eval_env_logs = eval_on_environments(model, DEVICE, use_argmax=use_argmax)
+    eval_state_logs = eval_on_all_possible_states(
+        model, DEVICE, target_q_table, target_action_dist
+    )
+    log.info(
+        f"Avg. return per episode: {eval_env_logs[EnvEvalLogKeys.AVG_RETURN_PER_EPISODE.value]}"
+    )
+    log.info(f"Has truncation: {eval_env_logs[EnvEvalLogKeys.HAS_TRUNC.value]}")
+
+    return {
+        "verification_passed": True,
+        "avg_return_per_episode": eval_env_logs[
+            EnvEvalLogKeys.AVG_RETURN_PER_EPISODE.value
+        ],
+        "has_truncation": eval_env_logs[EnvEvalLogKeys.HAS_TRUNC.value],
+        "kl_div": eval_state_logs[StateEvalLogKeys.KL_DIV.value],
+        "policy_error_rate_cmp_target": eval_state_logs[
+            StateEvalLogKeys.POLICY_ERROR_RATE_CMP_TARGET.value
+        ],
+    }
+
+
 def post_interpret_inference(eval_cfg: DictConfig):
     experiment_name = f"{eval_cfg['experiment_name']}"
     assert eval_cfg["model_type"] == "mt"
@@ -249,9 +376,15 @@ def post_interpret_inference(eval_cfg: DictConfig):
         eval_cfg, DEVICE
     )
 
-    close_dist_list = []
-    win_rate_list = []
-    avg_return_per_episode_list = []
+    verification_pass_list = []
+
+    target_metric_str = [
+        "avg_return_per_episode",
+        "has_truncation",
+        "kl_div",
+        "policy_error_rate_cmp_target",
+    ]
+    target_dict = {k: [] for k in target_metric_str}
 
     for s in eval_cfg["multirun_seeds"]:
         # Load agent
@@ -273,7 +406,7 @@ def post_interpret_inference(eval_cfg: DictConfig):
             "Please run the soft extraction first before inference with rules."
         )
         assert (
-            model_dir / "problog_rules.pl"
+            model_dir / "asp_rules_for_problog.pl"
         ).exists(), (
             "Please run the interpretation first before inference with rules."
         )
@@ -285,42 +418,43 @@ def post_interpret_inference(eval_cfg: DictConfig):
         )
         model.load_state_dict(sd)
 
-        with open(model_dir / "problog_rules.pl", "r") as f:
-            problog_rules = f.readlines()
-        problog_rules = [r.strip() for r in problog_rules]
+        with open(model_dir / "asp_rules_for_problog.pl", "r") as f:
+            asp_rules_for_problog = f.readlines()
+        asp_rules_for_problog = [r.strip() for r in asp_rules_for_problog]
 
         log.info(f"Interpretation of {model_dir.name}:")
-        ret = inference(
-            problog_rules=problog_rules,
+        ret = inference_with_asp_verification(
+            asp_rules_for_problog=asp_rules_for_problog,
             model=model,
-            model_dir=model_dir,
-            use_decode_obs=use_decode_obs,
+            use_argmax=eval_cfg.get("use_argmax", False),
             target_q_table=target_q_table,
             target_action_dist=target_action_dist,
         )
-        if not ret["close_dist"]:
-            log.info(
-                f"Seed {s} has a different action distribution generated from"
-                " Problog rules than the NDNF-MT agent."
-            )
-        else:
-            close_dist_list.append(s)
+        if not ret["verification_passed"]:
+            continue
 
-        avg_return_per_episode_list.append(ret["avg_return_per_episode"])
+        verification_pass_list.append(s)
+        for k in target_metric_str:
+            target_dict[k].append(ret[k])
         log.info("======================================")
 
-    log.info(f"Close distributions runs: {close_dist_list}")
+    log.info(f"Verified runs: {verification_pass_list}")
     log.info(
-        f"Proportion: {len(close_dist_list) / len(eval_cfg['multirun_seeds'])}"
+        f"Proportion: {len(verification_pass_list) / len(eval_cfg['multirun_seeds'])}"
     )
-    log.info(f"Avg. return per episode: {np.mean(avg_return_per_episode_list)}")
+    log.info(
+        f"Avg. return per episode: {np.mean(target_dict['avg_return_per_episode'])}"
+    )
 
     aggregated_logs = {}
-    aggregated_logs["close_dist_list"] = close_dist_list
-    for k, v in synthesize(
-        avg_return_per_episode_list, compute_ste=True
-    ).items():
-        aggregated_logs[f"avg_return_per_episode_{k}"] = float(v)
+    aggregated_logs["verification_pass_list"] = verification_pass_list
+    for k, l in target_dict.items():
+        if k == "has_truncation":
+            aggregated_logs[k] = any(l)
+            continue
+
+        for m, v in synthesize(l, compute_ste=True).items():
+            aggregated_logs[f"{m}_{k}"] = float(v)
 
     with open("taxi_problog_inference_aggregated_logs.json", "w") as f:
         json.dump(aggregated_logs, f, indent=4)

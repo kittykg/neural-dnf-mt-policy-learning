@@ -347,7 +347,7 @@ def problog_rule_generation(
     # Compute pure problog rules
     not_used_alway_true_or_false_conjunctions = []
     problog_rules = []
-    problog_rule_with_asp = []
+    problog_rules_with_asp = []
     asp_rules_for_problog = []
 
     # Generate annotated disjunctions
@@ -391,7 +391,7 @@ def problog_rule_generation(
             asp_rules_for_problog.append(
                 f"rule({i}) :- {', '.join(asp_rule_body)}."
             )
-            problog_rule_with_asp.append(f"{rule_head} :- rule({i}).")
+            problog_rules_with_asp.append(f"{rule_head} :- rule({i}).")
 
     # Generate non-probablistic rules
     conjunction_map: dict[int, list[Atom]] = condensation_dict[
@@ -430,8 +430,9 @@ def problog_rule_generation(
     for r in problog_rules:
         log.info(r)
 
-    return {
-        "problog_rules": problog_rules,
-        "problog_rule_with_asp": problog_rule_with_asp,
-        "asp_rules_for_problog": asp_rules_for_problog,
-    }
+    ret_dict = {"problog_rules": problog_rules}
+    if gen_asp:
+        ret_dict["problog_rules_with_asp"] = problog_rules_with_asp
+        ret_dict["asp_rules_for_problog"] = asp_rules_for_problog
+
+    return ret_dict

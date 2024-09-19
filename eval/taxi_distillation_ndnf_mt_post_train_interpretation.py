@@ -117,15 +117,15 @@ def interpret(
     # table.
     # - The probabilities are used in the annotated disjunctions head.
     # - The rule body is the entry of the truth table.
-    problog_rules = problog_rule_generation(
-        rule_simplification_dict, condensation_dict
+    ret_dict = problog_rule_generation(
+        rule_simplification_dict, condensation_dict, gen_asp=True
     )
 
     return {
-        "problog_rules": problog_rules,
         "weighted_logic_equations": rule_simplification_dict[
             "weighted_logic_equations"
         ],
+        **ret_dict,
     }
 
 
@@ -154,9 +154,11 @@ def post_train_interpret(eval_cfg: DictConfig):
         with open(model_dir / "interpretation.json", "w") as f:
             json.dump(ret, f, indent=4)
 
-        with open(model_dir / "problog_rules.pl", "w") as f:
-            for r in ret["problog_rules"]:
-                f.write(f"{r}\n")
+        for k, v in ret.items():
+            if "rules" in k:
+                with open(model_dir / f"{k}.pl", "w") as f:
+                    for r in v:
+                        f.write(f"{r}\n")
 
         log.info("======================================")
 

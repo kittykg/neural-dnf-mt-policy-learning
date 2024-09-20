@@ -35,7 +35,9 @@ from eval.common import ToyTextSoftExtractionReturnCode
 from eval.taxi_distillation_rl_eval_common import (
     eval_on_all_possible_states,
     eval_on_environments,
+    eval_on_environments_with_all_start_seeds,
     get_target_q_table_and_action_dist,
+    get_all_possible_seeds_for_all_start_states,
     EnvEvalLogKeys,
     StateEvalLogKeys,
 )
@@ -43,9 +45,9 @@ from taxi_common import N_ACTIONS, N_OBSERVATION_SIZE, N_DECODE_OBSERVATION_SIZE
 from utils import post_to_discord_webhook
 
 
+BASE_STORAGE_DIR = root / "taxi_distillation_storage"
 DEFAULT_GEN_SEED = 2
 DEVICE = torch.device("cpu")
-BASE_STORAGE_DIR = root / "taxi_distillation_storage"
 EVAL_ENV_NUM_EPISODES = 100
 
 FIRST_PRUNE_MODEL_PTH_NAME = "model_soft_mr_pruned.pth"
@@ -59,6 +61,7 @@ log = logging.getLogger()
 def post_training(
     model: NeuralDNFMutexTanh,
     model_dir: Path,
+    all_seeds_for_each_start_state: list[int] | None = None,
     target_q_table: np.ndarray | None = None,
     target_action_dist: Categorical | None = None,
 ) -> dict[str, Any] | ToyTextSoftExtractionReturnCode:
@@ -70,11 +73,19 @@ def post_training(
             target_q_table=target_q_table,
             target_action_dist=target_action_dist,
         )
-        env_eval_logs = eval_on_environments(
-            ndnf_model=model,
-            device=DEVICE,
-            num_episodes=EVAL_ENV_NUM_EPISODES,
-        )
+        if all_seeds_for_each_start_state is not None:
+            env_eval_logs = eval_on_environments_with_all_start_seeds(
+                ndnf_model=model,
+                device=DEVICE,
+                all_seeds_for_each_start_state=all_seeds_for_each_start_state,
+                use_argmax=True,
+            )
+        else:
+            env_eval_logs = eval_on_environments(
+                ndnf_model=model,
+                device=DEVICE,
+                num_episodes=EVAL_ENV_NUM_EPISODES,
+            )
         return {**states_eval_logs, **env_eval_logs}
 
     def _simulate_with_print(model_name: str) -> dict[str, Any]:
@@ -210,11 +221,19 @@ def post_training(
                 target_q_table=target_q_table,
                 target_action_dist=target_action_dist,
             )
-            env_eval_log = eval_on_environments(
-                ndnf_model=model,
-                device=DEVICE,
-                num_episodes=EVAL_ENV_NUM_EPISODES,
-            )
+            if all_seeds_for_each_start_state is not None:
+                env_eval_log = eval_on_environments_with_all_start_seeds(
+                    ndnf_model=model,
+                    device=DEVICE,
+                    all_seeds_for_each_start_state=all_seeds_for_each_start_state,
+                    use_argmax=True,
+                )
+            else:
+                env_eval_log = eval_on_environments(
+                    ndnf_model=model,
+                    device=DEVICE,
+                    num_episodes=EVAL_ENV_NUM_EPISODES,
+                )
             r = {**states_eval_log, **env_eval_log}
             r["t_val"] = v.item()
             r["kl"] = F.kl_div(
@@ -347,6 +366,12 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         eval_cfg, DEVICE
     )
 
+    all_seeds_for_each_start_state = None
+    if eval_cfg.get("eval_with_env_seeds", False):
+        all_seeds_for_each_start_state = (
+            get_all_possible_seeds_for_all_start_states()
+        )
+
     post_training_fail_runs: list[int] = []
 
     avg_return_per_episode_list: list[float] = []
@@ -376,7 +401,11 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
 
         log.info(f"Experiment {model_dir.name} loaded!")
         ret = post_training(
-            model, model_dir, target_q_table, target_action_dist
+            model=model,
+            model_dir=model_dir,
+            all_seeds_for_each_start_state=all_seeds_for_each_start_state,
+            target_q_table=target_q_table,
+            target_action_dist=target_action_dist,
         )
         if isinstance(ret, ToyTextSoftExtractionReturnCode):
             log.info(f"Experiment {model_dir.name} failed with code {ret.name}")

@@ -1,4 +1,5 @@
 from enum import Enum
+import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -42,6 +43,8 @@ from taxi_distillation_common import (
 EVAL_NUM_ENVS = 8
 EVAL_NUM_RUNS = 1000000
 TAXI_ENV_POSSIBLE_STATES, _ = split_all_states_to_reachable_and_non()
+RESULT_STORAGE_DIR = root / "results" / "Taxi-Distillation"
+START_STATE_SEEDS_JSON_NAME = "taxi_all_start_states.json"
 
 
 class EnvEvalLogKeys(Enum):
@@ -51,6 +54,7 @@ class EnvEvalLogKeys(Enum):
     AVG_L1_MOD_AUX = "env_eval_avg_l1_mod_aux"
     AVG_RETURN_PER_EPISODE = "env_eval_avg_return_per_episode"
     AVG_NUM_FRAMES_PER_EPISODE = "env_eval_avg_num_frames_per_episode"
+    TRUNC_SEEDS = "env_eval_truncation_seeds"
 
 
 class StateEvalLogKeys(Enum):
@@ -212,6 +216,116 @@ def eval_on_environments(
     return logs
 
 
+def eval_on_environments_with_all_start_seeds(
+    ndnf_model: BaseNeuralDNF,
+    device: torch.device,
+    all_seeds_for_each_start_state: list[int],
+    use_argmax: bool = True,
+):
+    """
+    `all_seeds_for_each_start_state` is expected to be a list of 300 integers
+    """
+    # Convert NDNF-EO to plain NDNF
+    if isinstance(ndnf_model, NeuralDNFEO):
+        eval_model = ndnf_model.to_ndnf()
+    else:
+        eval_model = ndnf_model
+
+    num_frames_per_episode = []
+    return_per_episode = []
+
+    logs: dict[str, Any] = {
+        EnvEvalLogKeys.ME.value: True,
+        EnvEvalLogKeys.MA.value: False,
+        EnvEvalLogKeys.HAS_TRUNC.value: False,
+    }
+
+    num_envs = 10
+    envs = SyncVectorEnv(
+        [
+            lambda: gym.make("Taxi-v3", render_mode="rgb_array")
+            for _ in range(num_envs)
+        ]
+    )
+
+    seed_batch = np.array(all_seeds_for_each_start_state).reshape(-1, num_envs)
+    return_per_episode = np.zeros(seed_batch.shape)
+    num_frames_per_episode = np.zeros(seed_batch.shape)
+    trunc_seed = []
+
+    for batch_idx in range(seed_batch.shape[0]):
+        sb = seed_batch[batch_idx].tolist()
+        obs, _ = envs.reset(seed=sb)
+
+        log_episode_return = torch.zeros(num_envs, device=device)
+        log_episode_num_frames = torch.zeros(num_envs, device=device)
+        log_done_counter = np.zeros(num_envs).astype(bool)
+
+        while not np.all(log_done_counter):
+            with torch.no_grad():
+                actions, tanh_out = eval_get_ndnf_action(
+                    eval_model, obs, device, use_argmax
+                )
+
+            tanh_action = np.count_nonzero(tanh_out > 0, axis=1)
+            if np.any(tanh_action > 1):
+                logs[EnvEvalLogKeys.ME.value] = False
+            if np.any(tanh_action == 0):
+                logs[EnvEvalLogKeys.MA.value] = True
+
+            obs, reward, terminated, truncated, _ = envs.step(
+                actions.cpu().numpy()
+            )
+            if np.any(truncated):
+                logs[EnvEvalLogKeys.HAS_TRUNC.value] = True
+
+            log_episode_return += torch.tensor(
+                reward, device=device, dtype=torch.float
+            )
+            log_episode_num_frames += torch.ones(num_envs, device=device)
+
+            for i, (ter, trun) in enumerate(zip(terminated, truncated)):
+                if ter or trun:
+                    log_done_counter[i] = True
+                    return_per_episode[batch_idx, i] = log_episode_return[
+                        i
+                    ].item()
+                if trun:
+                    trunc_seed.append(sb[i])
+
+            mask = 1 - torch.tensor(
+                tuple(a | b for a, b in zip(terminated, truncated)),
+                device=device,
+                dtype=torch.float,
+            )
+            log_episode_return *= mask
+            log_episode_num_frames *= mask
+
+    envs.close()
+
+    # Calculate the sparsity of the model
+    p_t = torch.cat(
+        [
+            parameter.view(-1)
+            for parameter in eval_model.parameters()
+            if parameter.requires_grad
+        ]
+    )
+
+    logs[EnvEvalLogKeys.AVG_L1_MOD_AUX.value] = (
+        torch.abs(p_t * (6 - torch.abs(p_t))).sum() / p_t.numel()
+    ).item()
+    logs[EnvEvalLogKeys.AVG_RETURN_PER_EPISODE.value] = float(
+        np.mean(return_per_episode)
+    )
+    logs[EnvEvalLogKeys.AVG_NUM_FRAMES_PER_EPISODE.value] = float(
+        np.mean(num_frames_per_episode)
+    )
+    logs[EnvEvalLogKeys.TRUNC_SEEDS.value] = trunc_seed
+
+    return logs
+
+
 def eval_on_all_possible_states(
     ndnf_model: BaseNeuralDNF,
     device: torch.device,
@@ -345,3 +459,39 @@ def get_target_q_table_and_action_dist(
         target_q_table = load_target_q_table(tab_q_path_str)
 
     return target_q_table, target_action_dist
+
+
+def generate_all_possible_start_states() -> list[int]:
+    start_state_counter = {}
+    env = gym.make("Taxi-v3")
+    for i in range(1000000):
+        obs, _ = env.reset(seed=i)
+
+        if obs not in start_state_counter:
+            start_state_counter[obs] = []
+        start_state_counter[obs].append(i)
+
+    sorted_k = sorted(list(start_state_counter.keys()))
+
+    json_dict = {
+        "all_possible_start_states": sorted_k,
+        "num_possible_start_states": len(sorted_k),
+        "all_seeds_for_each_start_state": [
+            min(start_state_counter[k]) for k in sorted_k
+        ],
+        "state_seed_map": {k: min(start_state_counter[k]) for k in sorted_k},
+    }
+
+    with open(RESULT_STORAGE_DIR / START_STATE_SEEDS_JSON_NAME, "w") as f:
+        json.dump(json_dict, f, indent=4)
+
+    return json_dict["all_seeds_for_each_start_state"]
+
+
+def get_all_possible_seeds_for_all_start_states() -> list[int]:
+    if not (RESULT_STORAGE_DIR / START_STATE_SEEDS_JSON_NAME).exists():
+        return generate_all_possible_start_states()
+
+    with open(RESULT_STORAGE_DIR / START_STATE_SEEDS_JSON_NAME, "r") as f:
+        json_dict = json.load(f)
+        return json_dict["all_seeds_for_each_start_state"]

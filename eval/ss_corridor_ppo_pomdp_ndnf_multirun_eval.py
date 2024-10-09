@@ -179,7 +179,7 @@ def post_training(
             og_action_dist = og_log["action_distribution"]
             new_action_dist = new_log["action_distribution"]
 
-            return torch.allclose(og_action_dist, new_action_dist, atol=1e-2)
+            return torch.allclose(og_action_dist, new_action_dist, atol=1e-3)
 
         while True:
             log.info(f"Pruning iteration: {prune_count+1}")

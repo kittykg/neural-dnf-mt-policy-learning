@@ -386,7 +386,9 @@ def train_ppo(
                     ] == 1 and delta_one_count > training_cfg["aux_loss"].get(
                         "delta_one_delay", 3
                     ):
-                        aux_loss_dict = agent.get_aux_loss(next_obs_dict)
+                        aux_loss_dict = agent.get_aux_loss(
+                            {agent.input_key: b_obs[mb_inds]}
+                        )
 
                         l_disj_l1_mod_lambda = training_cfg["aux_loss"][
                             "dis_l1_mod_lambda"

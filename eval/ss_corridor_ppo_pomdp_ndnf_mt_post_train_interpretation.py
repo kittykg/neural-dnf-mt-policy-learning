@@ -61,7 +61,9 @@ def interpret(
     )
 
     pruned_state = torch.load(
-        model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+        model_dir / SECOND_PRUNE_MODEL_PTH_NAME,
+        map_location=DEVICE,
+        weights_only=True,
     )
     model.load_state_dict(pruned_state)
     model.eval()

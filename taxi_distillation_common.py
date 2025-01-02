@@ -29,7 +29,7 @@ def load_mlp_model(
     mlp_model_path = Path(mlp_model_path_str)
     assert mlp_model_path.exists(), f"Path {mlp_model_path} does not exist"
 
-    sd = torch.load(mlp_model_path, map_location=device)
+    sd = torch.load(mlp_model_path, map_location=device, weights_only=True)
     model.load_state_dict(sd)
     model.eval()
     return model

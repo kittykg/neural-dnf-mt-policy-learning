@@ -106,7 +106,9 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
             ),
         )
         model.to(DEVICE)
-        model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
+        model_state = torch.load(
+            model_dir / "model.pth", map_location=DEVICE, weights_only=True
+        )
         model.load_state_dict(model_state)
         model.eval()
 

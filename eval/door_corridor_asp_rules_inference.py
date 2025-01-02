@@ -63,7 +63,9 @@ def load_model_and_asp_rules(
     )
     model.to(DEVICE)
     model_state = torch.load(
-        model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+        model_dir / SECOND_PRUNE_MODEL_PTH_NAME,
+        map_location=DEVICE,
+        weights_only=True,
     )
     model.load_state_dict(model_state)
     model.eval()

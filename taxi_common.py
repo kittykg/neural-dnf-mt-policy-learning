@@ -370,7 +370,7 @@ class TaxiEnvPPONDNFBasedAgent(TaxiEnvPPOBaseAgent):
         """
         Load the critic from a trained model.
         """
-        full_model = torch.load(model_path)
+        full_model = torch.load(model_path, weights_only=True)
         critic_dict = OrderedDict()
         for k in full_model.keys():
             if "critic" in k:

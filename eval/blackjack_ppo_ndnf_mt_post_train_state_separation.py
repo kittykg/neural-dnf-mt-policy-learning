@@ -213,7 +213,9 @@ def post_training(
     # Otherwise, we prune the model and save the pruned model
     if (model_dir / "model_mr_pruned.pth").exists():
         pruned_state = torch.load(
-            model_dir / "model_mr_pruned.pth", map_location=DEVICE
+            model_dir / "model_mr_pruned.pth",
+            map_location=DEVICE,
+            weights_only=True,
         )
         model.load_state_dict(pruned_state)
     else:
@@ -343,7 +345,9 @@ def post_training(
 
         if (model_dir / "thresholded_model.pth").exists():
             thresholded_state = torch.load(
-                model_dir / "thresholded_model.pth", map_location=DEVICE
+                model_dir / "thresholded_model.pth",
+                map_location=DEVICE,
+                weights_only=True,
             )
             model.load_state_dict(thresholded_state)
         else:
@@ -423,7 +427,9 @@ def post_train_eval(eval_cfg: DictConfig) -> dict[str, Any]:
             share_layer_with_critic=eval_cfg["share_layer_with_critic"],
         )  # type: ignore
         model.to(DEVICE)
-        model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
+        model_state = torch.load(
+            model_dir / "model.pth", map_location=DEVICE, weights_only=True
+        )
         model.load_state_dict(model_state)
         model.eval()
 

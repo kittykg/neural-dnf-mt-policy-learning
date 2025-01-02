@@ -226,7 +226,9 @@ def post_training(
     # Otherwise, we prune the model and save the pruned model
     if (model_dir / FIRST_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / FIRST_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+            model_dir / FIRST_PRUNE_MODEL_PTH_NAME,
+            map_location=DEVICE,
+            weights_only=True,
         )
         model.load_state_dict(pruned_state)
     else:
@@ -306,7 +308,9 @@ def post_training(
 
     if (model_dir / THRESHOLD_MODEL_PTH_NAME).exists():
         thresholded_state = torch.load(
-            model_dir / THRESHOLD_MODEL_PTH_NAME, map_location=DEVICE
+            model_dir / THRESHOLD_MODEL_PTH_NAME,
+            map_location=DEVICE,
+            weights_only=True,
         )
         model.load_state_dict(thresholded_state)
     elif (model_dir / THRESHOLD_JSON_NAME).exists():
@@ -342,7 +346,9 @@ def post_training(
     # Otherwise, we prune the model and save the pruned model
     if (model_dir / SECOND_PRUNE_MODEL_PTH_NAME).exists():
         pruned_state = torch.load(
-            model_dir / SECOND_PRUNE_MODEL_PTH_NAME, map_location=DEVICE
+            model_dir / SECOND_PRUNE_MODEL_PTH_NAME,
+            map_location=DEVICE,
+            weights_only=True,
         )
         model.load_state_dict(pruned_state)
     else:
@@ -401,7 +407,9 @@ def post_train_eval(eval_cfg: DictConfig):
         )
         assert isinstance(model, SSCPPONDNFBasedAgent)
         model.to(DEVICE)
-        model_state = torch.load(model_dir / "model.pth", map_location=DEVICE)
+        model_state = torch.load(
+            model_dir / "model.pth", map_location=DEVICE, weights_only=True
+        )
         model.load_state_dict(model_state)
         model.eval()
 

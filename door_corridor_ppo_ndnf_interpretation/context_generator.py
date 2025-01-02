@@ -285,7 +285,7 @@ def generate_context_multirun(eval_cfg: DictConfig):
             continue
 
         theresholded_model_sd = torch.load(
-            thresholded_model_path, map_location=DEVICE
+            thresholded_model_path, map_location=DEVICE, weights_only=True
         )
         model.load_state_dict(theresholded_model_sd)
         model.eval()

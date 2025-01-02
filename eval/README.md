@@ -1,6 +1,10 @@
 # Evaluation scripts
 
-This directory contains scripts for evaluating the performance of the models.
+This directory contains scripts for evaluating the performance of the models and
+post-training processes to translate the neural DNF-MT models to ProbLog/ASP
+rules.
+
+![post-training](../figures/post-training-process.png)
 
 The relevant configs are in `conf/eval/` .
 
@@ -54,7 +58,7 @@ Blackjack environment.
 
 * MLP
     - Evaluate RL performance: `blackjack_ppo_multirun_rl_performance_eval.py`
-    
+
 
 * NDNF-MT
     - Evaluate RL performance: `blackjack_ppo_multirun_rl_performance_eval.py`

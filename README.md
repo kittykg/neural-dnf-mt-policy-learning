@@ -1,15 +1,27 @@
 # Neural DNF-MT: A Neuro-symbolic Approach for Learning Interpretable and Editable Policies
 
 This repository contains the RL code for the paper "Neural DNF-MT: A
-Neuro-symbolic Approach for Learning Interpretable and Editable Policies".
+Neuro-symbolic Approach for Learning Interpretable and Editable Policies" in
+AAMAS 2025. The full paper with appendix can be found on arXiv (TODO).
+
+We introduce a novel neuro-symbolic approach, Neural DNF-MT, for learning
+policies in reinforcement learning. The neural DNF-MT can be trained in
+end-to-end fashion with deep actor-critic algorithms, and it provides
+interpretability via post-training logical translation.
+
+![PPO-1](figures/binary-ndnf-mt-ac.png)
+
+![PPO-2](figures/image-ndnf-mt-ac.png)
 
 ## Requirements
 
-Custom libraries:
+Our custom libraries:
 
-* Neural DNF package `neural-dnf`
+* Neural DNF package [`neural-dnf`](https://github.com/kittykg/neural-dnf)
 
-* Corridor environment package `corridor-grid`
+* Corridor environment package [`corridor-grid`](https://github.com/kittykg/corridor-grid)
+
+We recommend cloning the custom libraries and then installing in editable mode.
 
 Other essential libraries are listed in `requirements.txt` .
 
@@ -18,7 +30,7 @@ Other essential libraries are listed in `requirements.txt` .
 We use Hydra to manage configurations. We refer new users to the [Hydra
 documentation](https://hydra.cc/docs/intro/) for more information on how to use
 Hydra. The configuration files are located in `conf/` . The main configuration
-file is `conf/config.yaml` . 
+file is `conf/config.yaml` .
 
 Most training configurations in `conf/training` are the final hyperparameters we
 used in the paper, although some might differ. For the actual hyperparameters
@@ -128,7 +140,7 @@ For training:
 
 * `taxi_tabular.py`: Q-table (supports both Q-learning and SARSA)
 
-* `taxi_ppo.py`: Actor-critic PPO (supports MLP and neural DNF-based actors, 
+* `taxi_ppo.py`: Actor-critic PPO (supports MLP and neural DNF-based actors,
   although the neural DNF-based actor is not used in the paper)
 
 * `taxi_distillation.py`: Distillation of neural DNF-based actors
@@ -171,6 +183,19 @@ Policy intervention:
 
 * `notebooks/Door Corridor PPO NDNF-MT-6731 Intervention.ipynb`: Notebook for
   policy intervention with neural DNF-MT actor in DC-T and DC-OT
+
+## Results
+
+![results](figures/rl-results.png)
+
+For detailed results in table, please refer to the paper.
+
+In most cases, the results can be reproduced with the configs given in this
+repo. For detailed hyperparameters, please refer to the paper's Appendix.
+
+## Citation
+
+TODO
 
 ## References
 

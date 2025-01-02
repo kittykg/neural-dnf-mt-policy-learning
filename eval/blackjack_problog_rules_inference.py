@@ -319,7 +319,7 @@ def run_eval(cfg: DictConfig) -> None:
     np.random.seed(DEFAULT_GEN_SEED)
     random.seed(DEFAULT_GEN_SEED)
 
-    torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None

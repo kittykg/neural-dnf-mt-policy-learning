@@ -240,12 +240,12 @@ def multirun_rl_performance_eval(eval_cfg: DictConfig) -> dict[str, Any]:
         full_experiment_name = f"{experiment_name}_{s}"
         model_dir = BASE_STORAGE_DIR / full_experiment_name
         model = model_type(
-            num_preds=(
+            n_in=(
                 N_DECODE_OBSERVATION_SIZE
                 if use_decode_obs
                 else N_OBSERVATION_SIZE
             ),
-            num_conjuncts=eval_cfg["num_conjunctions"],
+            n_conjunctions=eval_cfg["num_conjunctions"],
             n_out=N_ACTIONS,
             delta=1.0,
         )
@@ -287,7 +287,7 @@ def run_eval(cfg: DictConfig) -> None:
     np.random.seed(DEFAULT_GEN_SEED)
     random.seed(DEFAULT_GEN_SEED)
 
-    torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None

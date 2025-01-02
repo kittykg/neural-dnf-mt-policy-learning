@@ -183,7 +183,7 @@ def train_ppo(
     agent.train()
     agent.to(device)
 
-    optimizer = optim.Adam(  # type: ignore
+    optimizer = optim.Adam(
         agent.parameters(), lr=training_cfg["learning_rate"], eps=1e-5
     )
 
@@ -410,21 +410,21 @@ def train_ppo(
                         delta_one_count += 1
 
                 loss.backward()
-                nn.utils.clip_grad_norm_(  # type: ignore
+                nn.utils.clip_grad_norm_(
                     agent.parameters(), training_cfg["max_grad_norm"]
                 )
                 optimizer.step()
 
             if (
                 training_cfg["target_kl"] is not None
-                and approx_kl > training_cfg["target_kl"]  # type: ignore
+                and approx_kl > training_cfg["target_kl"]
             ):
                 break
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = (
-            np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
+            np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
         )
 
         if isinstance(agent, BlackjackNDNFBasedAgent):
@@ -436,13 +436,13 @@ def train_ppo(
         writer.add_scalar(
             "charts/learning_rate", optimizer.param_groups[0]["lr"], global_step
         )
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)  # type: ignore
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)  # type: ignore
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)  # type: ignore
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar(
-            "losses/old_approx_kl", old_approx_kl.item(), global_step  # type: ignore
+            "losses/old_approx_kl", old_approx_kl.item(), global_step
         )
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)  # type: ignore
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), global_step)
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
@@ -466,13 +466,13 @@ def train_ppo(
                     )
 
         if isinstance(agent, BlackjackNDNFBasedAgent):
-            writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
+            writer.add_scalar("charts/delta", old_delta, global_step)
             if new_delta != old_delta:  # type: ignore
                 print(
                     f"i={iteration}\t"
                     f"old delta={old_delta:.3f} new delta={new_delta:.3f}\t"
                     f"last episodic_return={last_episodic_return}"
-                )  # type: ignore
+                )
 
         writer.add_scalar(
             f"charts/action_hit_prob_at_{DEFAULT_TARGET_STATE}",
@@ -581,7 +581,7 @@ def run_experiment(cfg: DictConfig) -> None:
             group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
-    # torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     writer_dir = Path(HydraConfig.get().run.dir) / "tb"
     writer = SummaryWriter(writer_dir)

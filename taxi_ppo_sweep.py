@@ -172,7 +172,7 @@ def train_ppo_wrapper(cfg: DictConfig):
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def run_experiment(cfg: DictConfig) -> None:
-    # torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     use_wandb = cfg["wandb"]["use_wandb"]
     assert use_wandb, "Must use wandb for hyperparameter search"

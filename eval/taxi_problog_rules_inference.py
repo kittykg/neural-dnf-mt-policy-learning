@@ -390,12 +390,12 @@ def post_interpret_inference(eval_cfg: DictConfig):
         # Load agent
         model_dir = BASE_STORAGE_DIR / f"{experiment_name}_{s}"
         model = NeuralDNFMutexTanh(
-            num_preds=(
+            n_in=(
                 N_DECODE_OBSERVATION_SIZE
                 if use_decode_obs
                 else N_OBSERVATION_SIZE
             ),
-            num_conjuncts=eval_cfg["num_conjunctions"],
+            n_conjunctions=eval_cfg["num_conjunctions"],
             n_out=N_ACTIONS,
             delta=1.0,
         )
@@ -469,7 +469,7 @@ def run_eval(cfg: DictConfig) -> None:
     np.random.seed(DEFAULT_GEN_SEED)
     random.seed(DEFAULT_GEN_SEED)
 
-    torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None

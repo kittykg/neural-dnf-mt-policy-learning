@@ -344,10 +344,10 @@ def train(
         "fmt": NeuralDNFFullMutexTanh,
     }[model_type_str]
     ndnf_model: BaseNeuralDNF = model_type(
-        num_preds=(
+        n_in=(
             N_DECODE_OBSERVATION_SIZE if use_decode_obs else N_OBSERVATION_SIZE
         ),
-        num_conjuncts=train_cfg["num_conjunctions"],
+        n_conjunctions=train_cfg["num_conjunctions"],
         n_out=N_ACTIONS,
         delta=1.0,
         weight_init_type=train_cfg.get("weight_init_type", "normal"),
@@ -365,9 +365,7 @@ def train(
     )
     ndnf_model.set_delta_val(train_cfg["dds"]["initial_delta"])
 
-    optimizer = torch.optim.Adam(  # type: ignore
-        ndnf_model.parameters(), lr=train_cfg["lr"]
-    )
+    optimizer = torch.optim.Adam(ndnf_model.parameters(), lr=train_cfg["lr"])
 
     if isinstance(ndnf_model, NeuralDNFEO):
         criterion = torch.nn.CrossEntropyLoss()
@@ -551,7 +549,7 @@ def run_experiment(cfg: DictConfig) -> None:
             group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
-    torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     use_discord_webhook = cfg["webhook"]["use_discord_webhook"]
     msg_body = None

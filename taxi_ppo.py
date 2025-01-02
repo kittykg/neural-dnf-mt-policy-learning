@@ -94,7 +94,7 @@ def train_ppo(
     log.info(agent)
 
     # Optimizer setup
-    optimizer = optim.Adam(  # type: ignore
+    optimizer = optim.Adam(
         [
             {
                 "params": agent.actor.parameters(),
@@ -330,7 +330,7 @@ def train_ppo(
                         loss += l_mt_ce2_lambda * l_mt_ce2
 
                 loss.backward()
-                nn.utils.clip_grad_norm_(  # type: ignore
+                nn.utils.clip_grad_norm_(
                     agent.parameters(), training_cfg["max_grad_norm"]
                 )
                 optimizer.step()
@@ -369,14 +369,14 @@ def train_ppo(
 
             if (
                 training_cfg["target_kl"] is not None
-                and approx_kl > training_cfg["target_kl"]  # type: ignore
+                and approx_kl > training_cfg["target_kl"]
             ):
                 break
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = (
-            np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y  # type: ignore
+            np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
         )
 
         if isinstance(agent, TaxiEnvPPONDNFBasedAgent):
@@ -392,13 +392,13 @@ def train_ppo(
             "charts/lr_critic", optimizer.param_groups[1]["lr"], global_step
         )
         # writer.add_scalar("charts/ent_coef", ent_coef, global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)  # type: ignore
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)  # type: ignore
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)  # type: ignore
+        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
         writer.add_scalar(
-            "losses/old_approx_kl", old_approx_kl.item(), global_step  # type: ignore
+            "losses/old_approx_kl", old_approx_kl.item(), global_step
         )
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)  # type: ignore
+        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clip_fracs), global_step)
         writer.add_scalar(
             "losses/explained_variance", explained_var, global_step
@@ -417,13 +417,13 @@ def train_ppo(
                 )
 
         if isinstance(agent, TaxiEnvPPONDNFMTAgent):
-            writer.add_scalar("charts/delta", old_delta, global_step)  # type: ignore
+            writer.add_scalar("charts/delta", old_delta, global_step)
             if new_delta != old_delta:  # type: ignore
                 print(
                     f"i={iteration}\t"
                     f"old delta={old_delta:.3f} new delta={new_delta:.3f}\t"
                     f"last episodic_return={last_episodic_return}"
-                )  # type: ignore
+                )
 
         writer.add_scalar(
             "charts/SPS",
@@ -535,7 +535,7 @@ def run_experiment(cfg: DictConfig):
             group=cfg["wandb"]["group"] if "group" in cfg["wandb"] else None,
         )
 
-    # torch.autograd.set_detect_anomaly(True)  # type: ignore
+    # torch.autograd.set_detect_anomaly(True)
 
     writer_dir = Path(HydraConfig.get().run.dir) / "tb"
     writer = SummaryWriter(writer_dir)

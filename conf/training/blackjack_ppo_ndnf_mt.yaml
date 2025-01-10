@@ -1,15 +1,15 @@
-experiment_name: blackjack_ppo_ndnf_mt_slwc_al16_3e5_aux10
+experiment_name: blackjack_ppo_ndnf_mt_al64_3e5_aux10
 
-seed: 73
+seed: null
 use_cuda: False
 use_mps: False
 
 use_decode_obs: True
-model_latent_size: 16
+model_latent_size: 64
 
 use_eo: False
 use_mt: True
-share_layer_with_critic: True
+share_layer_with_critic: False
 
 log_interval: 100
 

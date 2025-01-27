@@ -284,28 +284,39 @@ def post_training(model_dir: Path, model: DCPPONDNFMutexTanhAgent) -> int:
     og_conj_weight = model.actor.conjunctions.weights.data.clone()
     og_disj_weight = model.actor.disjunctions.weights.data.clone()
 
-    def threshold_model() -> DoorCorridorFailureCode | list[float]:
+    def threshold_model(
+        early_termination: bool = True,
+    ) -> DoorCorridorFailureCode | list[float]:
         log.info("Thresholding the model...")
 
         threshold_upper_bound = get_thresholding_upper_bound(model.actor)
         log.info(f"Threshold upper bound: {threshold_upper_bound}")
 
+        def threshold_pass_check(d: dict[str, Any]) -> bool:
+            return (
+                (
+                    np.array(d["return_per_episode"]).mean()
+                    >= np.array(
+                        og_ndnf_mt_dis_logs["return_per_episode"]
+                    ).mean()
+                )
+                and not d["missing_actions"]
+                and d["mutual_exclusivity"]
+            )
+
         t_vals = torch.arange(0, threshold_upper_bound, 0.01)
         result_dicts = []
         for v in t_vals:
             apply_threshold(model.actor, og_conj_weight, og_disj_weight, v)
-            result_dicts.append(simulate(_ndnf_mt_dis_action_fn))
+            d = simulate(_ndnf_mt_dis_action_fn)
+            if early_termination and threshold_pass_check(d):
+                return [v.item()]
+            else:
+                result_dicts.append(d)
 
         t_vals_candidates = []
         for i, d in enumerate(result_dicts):
-            if (
-                (
-                    np.array(d["return_per_episode"]).mean()
-                    < np.array(og_ndnf_mt_dis_logs["return_per_episode"]).mean()
-                )
-                or d["missing_actions"]
-                or not d["mutual_exclusivity"]
-            ):
+            if not threshold_pass_check(d):
                 continue
             t_vals_candidates.append(t_vals[i].item())
         if len(t_vals_candidates) == 0:

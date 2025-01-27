@@ -1,4 +1,4 @@
-experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux_fixed
+experiment_name: dc5_ppo_ndnf_mt_k2eoc4_tanh_exl8_3e5_aux_fixed_1
 
 seed: 73
 use_cuda: False
@@ -10,25 +10,25 @@ customised_image_encoder:
   # Conv layer config:
   encoder_output_chanel: 4
   last_act: tanh
-  kernel_size: 1
+  kernel_size: 2
   # Extra layer config:
   use_extra_layer: True
-  extra_layer_out: 16
+  extra_layer_out: 8
   extra_layer_use_bias: True
 
 use_eo: False
 use_mt: True
 
 aux_loss:
-  emb_dis_lambda: 3e-15
-  dis_l1_mod_lambda: 0
-  tanh_conj_lambda: 0
-  mt_ce2_lambda: 1e-3 # for NDNF-MT
+  emb_dis_lambda: 2e-9
+  dis_l1_mod_lambda: 2e-5
+  tanh_conj_lambda: 4e-7
+  mt_ce2_lambda: 2e-5 # for NDNF-MT
 
 dds:
   initial_delta: 0.1
-  delta_decay_delay: 50
-  delta_decay_steps: 10
+  delta_decay_delay: 117
+  delta_decay_steps: 7
   delta_decay_rate: 1.1
 
 door_corridor:
@@ -37,19 +37,19 @@ door_corridor:
   max_steps: 270
 
 total_timesteps: 3e5
-learning_rate: 1e-2
+learning_rate: 2e-3
 num_envs: 8
-num_steps: 64
+num_steps: 32
 anneal_lr: True
 gamma: 0.99
 gae_lambda: 0.95
 num_minibatches: 8
-update_epochs: 4
+update_epochs: 16
 norm_adv: True
 clip_coef: 0.3
 clip_vloss: True
-ent_coef: 0.1
-vf_coef: 1
+ent_coef: 0.05
+vf_coef: 0.82
 max_grad_norm: 0.5
 target_kl: null
 

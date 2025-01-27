@@ -1,4 +1,4 @@
-experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux
+experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux_fixed
 
 seed: 73
 use_cuda: False

@@ -193,15 +193,8 @@ For detailed results in table, please refer to the paper.
 
 ### Reproducibility
 
-For detailed hyperparameters, please refer to the paper's Appendix. The results
-can be reproduced with the code in this
-[commit](cfc363c1438f163cfb84da8429d8b93bf1e105cf).
-
-**Note**: There is a bug with auxiliary loss in some PPO training script ([Issue
-3](https://github.com/kittykg/ndnf_rl/issues/3)). PR
-[#4](https://github.com/kittykg/ndnf_rl/pull/4) fixes the bug but will likely
-affect the results.
-
+For detailed hyperparameters, please refer to the paper's Appendix as well as
+the yaml files in `conf/`.
 
 ## Citation
 

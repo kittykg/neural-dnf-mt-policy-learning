@@ -2,7 +2,10 @@
 
 This repository contains the RL code for the paper "Neural DNF-MT: A
 Neuro-symbolic Approach for Learning Interpretable and Editable Policies" in
-AAMAS 2025. The full paper with appendix can be found on arXiv (TODO).
+AAMAS 2025. The full paper with appendix can be found on
+[arXiv](https://arxiv.org/abs/2501.03888).
+
+[//]: # (TODO: Add AAMAS link once available)
 
 We introduce a novel neuro-symbolic approach, Neural DNF-MT, for learning
 policies in reinforcement learning. The neural DNF-MT can be trained in
@@ -113,7 +116,7 @@ For evaluation:
 For training:
 
 * `blackjack_tabular.py`: Q-table (supports both Q-learning and SARSA, not used
-  for the paper since we use the baseline Q-table from [1])
+  for the paper since we use the baseline Q-table from [SB20])
 
 * `blackjack_ppo.py`: Actor-critic PPO (supports MLP and neural DNF-based
   actors)
@@ -121,7 +124,7 @@ For training:
 For evaluation:
 
 * `eval/blackjack_tabular_snb_eval.py` - evaluation of the baseline Q-table from
-  [1]
+  [SB20]
 
 * `eval/blackjack_ppo_multirun_rl_performance_eval.py` - PPO actors evaluation
   (MLP + neural DNF-based actors)
@@ -188,13 +191,13 @@ Policy intervention:
 
 ![results](figures/rl-results.png)
 
-For detailed results in table, please refer to the paper.
+For detailed results in table, please refer to the full paper's Appendix D.
 
 
 ### Reproducibility
 
-For detailed hyperparameters, please refer to the paper's Appendix as well as
-the yaml files in `conf/`.
+For detailed hyperparameters, please refer to the full paper's Appendix D. The
+seeds we used should be in the eval yaml files in `conf/eval/`.
 
 ## Citation
 
@@ -202,5 +205,5 @@ TODO
 
 ## References
 
-[1] R. Sutton and A. Barto, “Reinforcement Learning: An Introduction” 2020.
+[SB20] R. Sutton and A. Barto, “Reinforcement Learning: An Introduction” 2020.
 [Online]. Available: http://www.incompleteideas.net/book/RLbook2020.pdf

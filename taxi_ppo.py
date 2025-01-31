@@ -308,7 +308,9 @@ def train_ppo(
                 optimizer.zero_grad(set_to_none=True)
 
                 if isinstance(agent, TaxiEnvPPONDNFBasedAgent):
-                    aux_loss_dict = agent.get_aux_loss(next_obs_dict)
+                    aux_loss_dict = agent.get_aux_loss(
+                        {agent.input_key: b_obs[mb_inds]}
+                    )
 
                     l_disj_l1_mod_lambda = training_cfg["aux_loss"][
                         "dis_l1_mod_lambda"

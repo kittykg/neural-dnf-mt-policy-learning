@@ -190,8 +190,11 @@ Policy intervention:
 
 For detailed results in table, please refer to the paper.
 
-In most cases, the results can be reproduced with the configs given in this
-repo. For detailed hyperparameters, please refer to the paper's Appendix.
+
+### Reproducibility
+
+For detailed hyperparameters, please refer to the paper's Appendix as well as
+the yaml files in `conf/`.
 
 ## Citation
 

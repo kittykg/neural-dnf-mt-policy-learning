@@ -1,5 +1,6 @@
-experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux
-multirun_seeds: [474, 1548, 2501, 2531, 3661, 3950, 4345, 4465, 5187, 5845, 5919, 6240, 6731, 7160, 8208, 8660]
+experiment_name: dc5_ppo_ndnf_mt_k1eoc4_tanh_exl16_3e5_aux_fixed
+multirun_seeds: [474, 964, 1075, 1147, 1548, 2202, 2207, 2441, 2501, 2531, 3454, 3661, 3704, 3950, 4074, 4345, 4465, 4993, 5187, 5845, 5919, 6240, 6357, 6731, 7160, 7589, 8132, 8247, 8631, 8660, 9544, 9746]
+
 
 use_eo: False
 use_mt: True

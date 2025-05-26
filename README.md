@@ -2,10 +2,9 @@
 
 This repository contains the RL code for the paper "Neural DNF-MT: A
 Neuro-symbolic Approach for Learning Interpretable and Editable Policies" in
-AAMAS 2025. The full paper with appendix can be found on
+[AAMAS 2025](https://plibin.github.io/aamas-25-proceedings/pdfs/p252.pdf). The
+full paper with appendix can be found on
 [arXiv](https://arxiv.org/abs/2501.03888).
-
-[//]: # (TODO: Add AAMAS link once available)
 
 We introduce a novel neuro-symbolic approach, Neural DNF-MT, for learning
 policies in reinforcement learning. The neural DNF-MT can be trained in
@@ -15,6 +14,13 @@ interpretability via post-training logical translation.
 ![PPO-1](figures/binary-ndnf-mt-ac.png)
 
 ![PPO-2](figures/image-ndnf-mt-ac.png)
+
+**Useful Links**
+
+- [Poster](figures/poster.pdf)
+
+- [5-min introduction video](https://www.youtube.com/watch?v=6_MFEDeN1cQ)
+
 
 ## Requirements
 
@@ -198,6 +204,7 @@ For detailed results in table, please refer to the full paper's Appendix D.
 
 For detailed hyperparameters, please refer to the full paper's Appendix D. The
 seeds we used should be in the eval yaml files in `conf/eval/`.
+
 
 ## Citation
 

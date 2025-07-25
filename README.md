@@ -2,9 +2,8 @@
 
 This repository contains the RL code for the paper "Neural DNF-MT: A
 Neuro-symbolic Approach for Learning Interpretable and Editable Policies" in
-[AAMAS 2025](https://plibin.github.io/aamas-25-proceedings/pdfs/p252.pdf). The
-full paper with appendix can be found on
-[arXiv](https://arxiv.org/abs/2501.03888).
+[AAMAS 2025](https://dl.acm.org/doi/10.5555/3709347.3743538). The full paper
+with appendix can be found on [arXiv](https://arxiv.org/abs/2501.03888).
 
 We introduce a novel neuro-symbolic approach, Neural DNF-MT, for learning
 policies in reinforcement learning. The neural DNF-MT can be trained in
@@ -206,9 +205,25 @@ For detailed hyperparameters, please refer to the full paper's Appendix D. The
 seeds we used should be in the eval yaml files in `conf/eval/`.
 
 
-## Citation
+## Recommended Citation
 
-TODO
+```bibtex
+@inproceedings{10.5555/3709347.3743538,
+  author    = {Baugh, Kexin Gu and Dickens, Luke and Russo, Alessandra},
+  title     = {Neural DNF-MT: A Neuro-symbolic Approach for Learning Interpretable and Editable Policies},
+  year      = {2025},
+  isbn      = {9798400714269},
+  publisher = {International Foundation for Autonomous Agents and Multiagent Systems},
+  address   = {Richland, SC},
+  abstract  = {Although deep reinforcement learning has been shown to be effective, the model's black-box nature presents barriers to direct policy interpretation. To address this problem, we propose a neuro-symbolic approach called neural DNF-MT for end-to-end policy learning. The differentiable nature of the neural DNF-MT model enables the use of deep actor-critic algorithms for training. At the same time, its architecture is designed so that trained models can be directly translated into interpretable policies expressed as standard (bivalent or probabilistic) logic programs. Moreover, additional layers can be included to extract abstract features from complex observations, acting as a form of predicate invention. The logic representations are highly interpretable, and we show how the bivalent representations of deterministic policies can be edited and incorporated back into a neural model, facilitating manual intervention and adaptation of learned policies. We evaluate our approach on a range of tasks requiring learning deterministic or stochastic behaviours from various forms of observations. Our empirical results show that our neural DNF-MT model performs at the level of competing black-box methods whilst providing interpretable policies.},
+  booktitle = {Proceedings of the 24th International Conference on Autonomous Agents and Multiagent Systems},
+  pages     = {252–260},
+  numpages  = {9},
+  keywords  = {neuro-symbolic learning, neuro-symbolic reinforcement learning},
+  location  = {Detroit, MI, USA},
+  series    = {AAMAS '25}
+}
+```
 
 ## References
 
